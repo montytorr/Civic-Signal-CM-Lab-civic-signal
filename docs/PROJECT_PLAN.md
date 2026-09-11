@@ -1,10 +1,13 @@
 # Civic Polling Network
 
-Status: active
+Status: paused
 Owner: Cal / Clawdius
 Created: 2026-05-03
+Paused: 2026-09-11
 Category: civic-tech
 Private GitHub repo: https://github.com/montytorr/civicsignal
+
+> **Operational state (2026-09-11): PAUSED.** CivicSignal runtime resources are intentionally stopped to free server capacity. This is not retirement and no data/volumes were deleted. Reactivation is documented in `/root/projects/civic-polling-network.md`; do not restart services automatically while this status remains paused.
 
 ## Goal
 
