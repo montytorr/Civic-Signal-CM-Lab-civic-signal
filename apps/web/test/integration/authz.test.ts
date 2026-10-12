@@ -273,53 +273,71 @@ describe.skipIf(!hasDatabase)('authorization rules against Postgres', () => {
     expect(await getRecentContributions(alice.id, { id: admin.id, isAdmin: true, verified: true })).toEqual([])
   })
 
-  it('P10: the owner reads the exact score; anonymous and other users see only the tier', async () => {
+  it('P10: the owner reads the exact score; others see nothing below the Contributor tier', async () => {
     expect((await getUserReputation(alice.id, viewerOf(alice)))[0]).toMatchObject({ score: 1, resolved_count: 1, correct_count: 1, tier: 'participant' })
     expect((await getUserReputation(bob.id, viewerOf(bob)))[0]).toMatchObject({ score: 0, resolved_count: 1, correct_count: 0, tier: 'newcomer' })
-    for (const viewer of [null, viewerOf(bob)]) {
-      const rows = await getUserReputation(alice.id, viewer)
-      expect(rows).toHaveLength(1)
-      expect(Object.keys(rows[0]).sort()).toEqual(['tier', 'topic_id', 'topics'])
-      expect(rows[0].tier).toBe('participant')
+    // Alice (score 1), Bob (score 0) and someone who never voted look the same to everyone else.
+    const neverVoted = await createUser()
+    for (const viewer of [null, viewerOf(carol)]) {
+      expect(await getUserReputation(alice.id, viewer)).toEqual([])
+      expect(await getUserReputation(bob.id, viewer)).toEqual([])
+      expect(await getUserReputation(neverVoted.id, viewer)).toEqual([])
     }
-    // Bob's wrong answer is invisible to others: same row shape, lowest tier, no counts.
-    expect(Object.keys((await getUserReputation(bob.id, viewerOf(alice)))[0]).sort()).toEqual(['tier', 'topic_id', 'topics'])
   })
 
-  it('P10: leaderboards and panel candidates list tiers, ordered by tier then handle, never scores', async () => {
+  it('P10: from the Contributor tier up, others see the tier only', async () => {
+    await query('update user_topic_reputation set score = 7 where user_id = $1 and topic_id = $2', [alice.id, topic])
+    try {
+      for (const viewer of [null, viewerOf(bob)]) {
+        const rows = await getUserReputation(alice.id, viewer)
+        expect(rows).toHaveLength(1)
+        expect(Object.keys(rows[0]).sort()).toEqual(['tier', 'topic_id', 'topics'])
+        expect(rows[0].tier).toBe('contributor')
+      }
+      const slug = (await queryOne<{ slug: string }>('select slug from topics where id = $1', [topic]))!.slug
+      const board = await getTopicLeaderboard(slug)
+      expect(board.map((r) => r.user_id)).toEqual([alice.id])
+      expect(Object.keys(board[0]).sort()).toEqual(['profiles', 'tier', 'topics', 'user_id'])
+      expect((await getPanelInviteCandidates()).map((c) => c.user_id)).toEqual([alice.id])
+    } finally {
+      await query('update user_topic_reputation set score = 1 where user_id = $1 and topic_id = $2', [alice.id, topic])
+    }
+  })
+
+  it('P10: leaderboards and panel candidates leave out everyone below the Contributor tier', async () => {
     const slug = (await queryOne<{ slug: string }>('select slug from topics where id = $1', [topic]))!.slug
     const board = await getTopicLeaderboard(slug)
-    expect(board.map((r) => r.user_id)).toEqual(expect.arrayContaining([alice.id, bob.id, carol.id]))
-    for (const row of board) expect(Object.keys(row).sort()).toEqual(['profiles', 'tier', 'topics', 'user_id'])
-    const ranks = board.map((r) => ['newcomer', 'participant', 'contributor', 'trusted', 'steward'].indexOf(r.tier))
-    expect(ranks).toEqual([...ranks].sort((a, b) => b - a))
+    for (const user of [alice, bob, carol]) expect(board.map((r) => r.user_id)).not.toContain(user.id)
+    for (const row of board) expect(['contributor', 'trusted', 'steward']).toContain(row.tier)
     const candidates = await getPanelInviteCandidates()
-    for (const row of candidates) expect(Object.keys(row)).not.toEqual(expect.arrayContaining(['score']))
-    expect(candidates.map((c) => c.user_id)).not.toContain(bob.id)
+    for (const user of [alice, bob, carol]) expect(candidates.map((c) => c.user_id)).not.toContain(user.id)
   })
 
-  it('P10: the rendered profile shows the exact score to its owner only', async () => {
+  it('P10: the rendered profile shows exact numbers to its owner only, and a low score looks like no votes', async () => {
     const profile = (await getUserProfile(alice.handle))!
-    const render = async (viewer: Viewer | null) =>
+    const render = async (userId: string, viewer: Viewer | null) =>
       renderToStaticMarkup(
         createElement(ReputationPage, {
           profile,
-          reputation: await getUserReputation(alice.id, viewer),
-          contributions: await getRecentContributions(alice.id, viewer),
-          pendingVotes: await getPendingVotes(alice.id, viewer),
-          isOwner: viewer?.id === alice.id,
+          reputation: await getUserReputation(userId, viewer),
+          contributions: await getRecentContributions(userId, viewer),
+          pendingVotes: await getPendingVotes(userId, viewer),
+          isOwner: viewer?.id === userId,
         }),
       )
-    const own = await render(viewerOf(alice))
+    const own = await render(alice.id, viewerOf(alice))
     expect(own).toContain('POINTS')
     expect(own).toContain('Recent resolved contributions')
     expect(own).toContain('Participant')
-    for (const html of [await render(null), await render(viewerOf(bob))]) {
-      expect(html).toContain('Participant')
-      expect(html).not.toContain('POINTS')
-      expect(html).not.toContain('accuracy')
-      expect(html).not.toContain('Recent resolved contributions')
-      expect(html).not.toContain('Your vote')
+    const neverVoted = await createUser()
+    for (const viewer of [null, viewerOf(carol)]) {
+      const empty = await render(neverVoted.id, viewer)
+      // Score 1 (one right answer) and score 0 (one wrong answer) render exactly like no votes at all.
+      expect(await render(alice.id, viewer)).toBe(empty)
+      expect(await render(bob.id, viewer)).toBe(empty)
+      for (const word of ['POINTS', 'accuracy', 'Participant', 'Newcomer', 'Recent resolved contributions', 'Your vote']) {
+        expect(empty).not.toContain(word)
+      }
     }
   })
 
@@ -408,15 +426,21 @@ describe.skipIf(!hasDatabase)('authorization rules against Postgres', () => {
     expect(res.body.disputes.map((d: { id: string }) => d.id)).toContain(disputeId)
   })
 
-  it('R7: panel invites need an admin, and topic reputation', async () => {
+  it('R7: panel invites need an admin, and a public tier (Contributor or higher) in the topic', async () => {
     expect((await call(panelInvite.POST, { method: 'POST', body: { topicId: topic, userId: carol.id } })).status).toBe(401)
     expect((await call(panelInvite.POST, { method: 'POST', as: alice.token, body: { topicId: topic, userId: carol.id } })).status).toBe(403)
     const noRep = await call(panelInvite.POST, { method: 'POST', as: admin.token, body: { topicId: topic, userId: bob.id } })
     expect(noRep.status).toBe(403)
     expect(noRep.body.code).toBe('INSUFFICIENT_REPUTATION')
-    const ok = await call(panelInvite.POST, { method: 'POST', as: admin.token, body: { topicId: topic, userId: carol.id } })
+    // Panel membership is public, so a Participant (score 1, not public) cannot be invited...
+    const participant = await call(panelInvite.POST, { method: 'POST', as: admin.token, body: { topicId: topic, userId: carol.id, minReputation: 1 } })
+    expect(participant.status).toBe(403)
+    expect((await call(panelInvite.POST, { method: 'POST', as: admin.token, body: { topicId: topic, userId: carol.id, minTier: 'participant' } })).status).toBe(400)
+    // ...until they reach the Contributor tier.
+    await query('update user_topic_reputation set score = 5 where user_id = $1 and topic_id = $2', [carol.id, topic])
+    const ok = await call(panelInvite.POST, { method: 'POST', as: admin.token, body: { topicId: topic, userId: carol.id, minTier: 'contributor' } })
     expect(ok.status).toBe(200)
-    expect(ok.body.member).toMatchObject({ user_id: carol.id, status: 'active' })
+    expect(ok.body.member).toMatchObject({ user_id: carol.id, status: 'active', min_reputation_at_invite: 5 })
   })
 
   it('D10: a non-admin cannot add panel members', async () => {
@@ -677,10 +701,11 @@ describe.skipIf(!hasDatabase)('authorization rules against Postgres', () => {
   })
 
   it('P3: a user cannot change anyone else’s profile; signup only sets the new user’s own', async () => {
+    const before = await query<{ id: string; handle: string }>('select id, handle from profiles order by id')
     await call(signup.POST, { method: 'POST', ip: '198.51.100.40', body: { email: `p3.${Date.now()}@example.com`, password: 'a strong password', handle: alice.handle, id: alice.id } })
     const after = await query<{ id: string; handle: string }>('select id, handle from profiles order by id')
-    for (const before of profilesBefore) expect(after).toContainEqual(before)
-    expect(after.length).toBe(profilesBefore.length + 1)
+    for (const row of before) expect(after).toContainEqual(row)
+    expect(after.length).toBe(before.length + 1)
   })
 
   it('P4: a new profile has the new user’s id (the users trigger creates it)', async () => {

@@ -24,7 +24,7 @@ import {
   requireVerified,
   type Viewer,
 } from '@/lib/authz'
-import { REPUTATION_TIERS, tierLabel, tierOf, tierRank, tierRankSql, tierSql } from '@/lib/reputation'
+import { PANEL_TIERS, PUBLIC_MIN_SCORE, PUBLIC_MIN_TIER, REPUTATION_TIERS, publicTierSql, tierLabel, tierOf, tierRank, tierRankSql, tierSql } from '@/lib/reputation'
 
 const alice: Viewer = { id: 'alice', isAdmin: false, verified: true }
 const bob: Viewer = { id: 'bob', isAdmin: false, verified: true }
@@ -71,6 +71,13 @@ describe('reputation', () => {
     expect(canReadExactReputation(bob, 'alice')).toBe(false)
     expect(canReadExactReputation(admin, 'alice')).toBe(false)
     expect(canReadExactReputation(null, 'alice')).toBe(false)
+  })
+
+  it('P10: nothing below the Contributor tier is public, and panel bars are public tiers', () => {
+    expect(PUBLIC_MIN_TIER).toBe('contributor')
+    expect(PUBLIC_MIN_SCORE).toBe(5)
+    expect(publicTierSql('r.score')).toBe('coalesce(r.score, 0) >= 5')
+    expect(PANEL_TIERS.map((t) => t.key)).toEqual(['contributor', 'trusted', 'steward'])
   })
 
   it('P10: tiers are coarse, ordered and defined in one place', () => {

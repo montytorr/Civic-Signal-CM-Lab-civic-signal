@@ -191,7 +191,7 @@ describe('vote privacy: reputation is tiered for everyone but its owner', () => 
         const before = text.slice(0, m.index)
         const owner = [...before.matchAll(/(?:export )?const (\w+) =/g)].at(-1)?.[1] ?? '(top level)'
         // What the statement exposes once tier expressions are taken out.
-        const exposed = m[0].replace(/\$\{tier(Rank)?Sql\('[^']*'\)\}/g, 'TIER')
+        const exposed = m[0].replace(/\$\{(?:tier|tierRank|publicTier)Sql\('[^']*'\)\}/g, 'TIER')
         return { file, owner, sql: m[0], exposed }
       }),
   )
@@ -230,6 +230,14 @@ describe('vote privacy: reputation is tiered for everyone but its owner', () => 
     expect(queries).toMatch(/canReadReputationEvents\(viewer, userId\) \? getOwnContributions\(viewer\)/)
     const callers = [...SOURCES].filter(([, text]) => /getOwn(Reputation|Contributions)\(/.test(text)).map(([file]) => file)
     expect(callers).toEqual(['app/lib/queries.ts'])
+  })
+
+  it('P10: every public reputation reader applies the public floor (Contributor and up)', () => {
+    const queries = SOURCES.get('app/lib/queries.ts') ?? ''
+    for (const name of ['getPublicReputation', 'getTopicLeaderboard', 'getPanelInviteCandidates']) {
+      const body = queries.slice(queries.indexOf(`export const ${name} =`)).split(/\nexport /)[0]
+      expect(body, name).toMatch(/\$\{publicTierSql\('r\.score'\)\}/)
+    }
   })
 
   it('P10: public components show tiers, not scores', () => {

@@ -300,6 +300,34 @@ describe.skipIf(!hasDatabase)('auth against Postgres', () => {
       expect((await signUp(email, 'a strong password')).status).toBe(429)
     }, 120_000)
 
+    it('each email flow has its own budget: exhausting signup and resend leaves password reset available', async () => {
+      const email = `budget.${Date.now()}@example.com`
+      for (let ip = 0; ip < 4; ip++) {
+        const from = freshIp()
+        for (let i = 0; i < 5; i++) {
+          expect((await signUp(email, 'a strong password', from)).status).toBe(200)
+          expect((await call(resend.POST, { method: 'POST', ip: from, body: { email } })).status).toBe(200)
+        }
+      }
+      expect((await signUp(email, 'a strong password')).status).toBe(429)
+      expect((await call(resend.POST, { method: 'POST', ip: freshIp(), body: { email } })).status).toBe(429)
+      const before = loggedLinks.length
+      expect((await call(forgot.POST, { method: 'POST', ip: freshIp(), body: { email } })).status).toBe(200)
+      expect(loggedLinks.length).toBe(before + 1)
+    }, 120_000)
+
+    it('forgot and reset have separate per-IP limits', async () => {
+      const ip = freshIp()
+      for (let i = 0; i < 10; i++) {
+        expect((await call(forgot.POST, { method: 'POST', ip, body: { email: `nobody${i}@test.civicsignal` } })).status).toBe(200)
+      }
+      expect((await call(forgot.POST, { method: 'POST', ip, body: { email: 'nobody-more@test.civicsignal' } })).status).toBe(429)
+      // The reset form from that IP is still served (the token is checked, not the forgot budget).
+      const res = await call(reset.POST, { method: 'POST', ip, body: { token: 'not-a-token', password: 'a fine new password' } })
+      expect(res.status).toBe(400)
+      expect(res.body.code).toBe('INVALID_TOKEN')
+    })
+
     it('verify: wrong passwords spend the link after 5 and count toward the login failure limits', async () => {
       const email = `guess.${Date.now()}@example.com`
       await signUp(email, 'the real password')
