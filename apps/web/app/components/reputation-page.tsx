@@ -27,7 +27,8 @@ type ContributionRow = {
 type PendingVoteRow = {
   id: string
   poll_id: string
-  answer: string | null
+  /** null while sealed; whether the vote matched once the poll resolved. */
+  matched: boolean | null
   receipt_hash: string
   created_at: string
   polls?: {
@@ -316,7 +317,7 @@ export const ReputationPage = ({
                     {row.polls?.topics?.label ?? '—'} · {row.polls?.status ?? 'sealed'}
                   </span>
                   <span style={{ fontSize: 13, color: 'var(--color-parchment-ink-soft)', minWidth: 80, textAlign: 'right' }}>
-                    Your vote: <strong style={{ color: 'var(--color-parchment-ink)' }}>{row.answer ?? 'sealed'}</strong>
+                    Your vote: <strong style={{ color: 'var(--color-parchment-ink)' }}>{row.matched == null ? 'sealed' : row.matched ? 'matched' : 'not matched'}</strong>
                   </span>
                 </div>
               ))}

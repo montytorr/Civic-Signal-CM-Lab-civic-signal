@@ -6,11 +6,11 @@ import { Eyebrow, Badge, Btn } from '@civicsignal/ui'
 
 type Topic = { id: string; slug: string; label: string }
 type Template = { id: string; slug: string; label: string; region: string; source_of_truth: string; resolution_criteria_template: string; topic_slug?: string | null }
-type Proposal = { id: string; question: string; region: string; status: string; created_at: string; moderator_notes?: string | null; poll_id?: string | null; revision_count?: number | null; appeal_reason?: string | null; appealed_at?: string | null; topics?: { label: string } | null; profiles?: { handle: string } | null }
+type Proposal = { id: string; question: string; region: string; status: string; created_at: string; moderator_notes?: string | null; poll_id?: string | null; revision_count?: number | null; appeal_reason?: string | null; appealed_at?: string | null; topics?: { label: string } | null; profiles?: { handle: string } | null; options?: unknown; source_of_truth?: string; resolution_criteria?: string; cutoff_at?: string; resolves_at?: string }
 
 const inputStyle: React.CSSProperties = { width: '100%', height: 38, padding: '0 12px', fontSize: 13.5, fontFamily: 'inherit', color: 'var(--color-parchment-ink)', background: 'var(--color-parchment-bg)', border: '1px solid var(--color-parchment-line)', borderRadius: 3, outline: 'none', boxSizing: 'border-box' }
 
-const statusTone = (s: string) => s === 'approved' ? 'green' : ['pending', 'appealed'].includes(s) ? 'amber' : 'neutral'
+const statusTone = (s: string): 'green' | 'amber' | 'neutral' => s === 'approved' ? 'green' : ['pending', 'appealed'].includes(s) ? 'amber' : 'neutral'
 
 export const ProposalsPage = ({ topics, templates, proposals, signedIn }: { topics: Topic[]; templates: Template[]; proposals: Proposal[]; signedIn: boolean }) => {
   const [question, setQuestion] = useState('Will the European Commission publish a final AI liability proposal before 30 June 2026?')
@@ -53,11 +53,11 @@ export const ProposalsPage = ({ topics, templates, proposals, signedIn }: { topi
   const loadProposalForRevision = (p: Proposal) => {
     setQuestion(p.question)
     setRegion(p.region)
-    setOptions(Array.isArray((p as any).options) ? (p as any).options : ['Yes', 'No'])
-    setSourceOfTruth((p as any).source_of_truth ?? sourceOfTruth)
-    setResolutionCriteria((p as any).resolution_criteria ?? resolutionCriteria)
-    setCutoffAt(((p as any).cutoff_at ?? cutoffAt).replace('T', ' ').slice(0, 16))
-    setResolvesAt(((p as any).resolves_at ?? resolvesAt).replace('T', ' ').slice(0, 16))
+    setOptions(Array.isArray(p.options) ? p.options.map(String) : ['Yes', 'No'])
+    setSourceOfTruth(p.source_of_truth ?? sourceOfTruth)
+    setResolutionCriteria(p.resolution_criteria ?? resolutionCriteria)
+    setCutoffAt((p.cutoff_at ?? cutoffAt).replace('T', ' ').slice(0, 16))
+    setResolvesAt((p.resolves_at ?? resolvesAt).replace('T', ' ').slice(0, 16))
     setNotice(`Loaded proposal ${p.id} into the form. Edit it, then submit as a fresh proposal.`)
   }
 
@@ -111,7 +111,7 @@ export const ProposalsPage = ({ topics, templates, proposals, signedIn }: { topi
             <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-parchment-line-soft)', display: 'flex', justifyContent: 'space-between' }}><Eyebrow>Public proposal log</Eyebrow><span className="font-mono" style={{ fontSize: 11, color: 'var(--color-parchment-muted)' }}>{items.length} proposals</span></div>
             {items.length === 0 ? <p style={{ margin: 0, padding: 20, fontSize: 13, color: 'var(--color-parchment-muted)' }}>No proposals yet.</p> : items.map((p) => (
               <div key={p.id} style={{ padding: '15px 20px', borderBottom: '1px solid var(--color-parchment-line-soft)' }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}><div style={{ fontSize: 13.5, lineHeight: 1.4 }}>{p.question}</div><Badge tone={statusTone(p.status) as any} mono>{p.status.replace('_', ' ')}</Badge></div>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}><div style={{ fontSize: 13.5, lineHeight: 1.4 }}>{p.question}</div><Badge tone={statusTone(p.status)} mono>{p.status.replace('_', ' ')}</Badge></div>
                 <div className="font-mono" style={{ marginTop: 6, fontSize: 10.5, color: 'var(--color-parchment-muted)' }}>{p.topics?.label ?? 'Topic'} · {p.region} · by {p.profiles?.handle ?? 'verified user'}</div>
                 {p.revision_count ? <div className="font-mono" style={{ marginTop: 5, fontSize: 10.5, color: 'var(--color-parchment-muted)' }}>revision {p.revision_count}</div> : null}
                 {p.moderator_notes && <p style={{ margin: '7px 0 0', fontSize: 12, color: 'var(--color-parchment-ink-soft)', lineHeight: 1.45 }}>Moderator note: {p.moderator_notes}</p>}

@@ -12,8 +12,7 @@ type Props = {
 
 export default async function Page({ searchParams }: Props) {
   const { topic: topicSlug } = await searchParams
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const topics = await getTopics() as any[]
+  const topics = await getTopics()
   const firstSlug = topics[0]?.slug ?? ''
   const selectedSlug = topicSlug ?? firstSlug
 

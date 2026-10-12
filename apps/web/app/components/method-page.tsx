@@ -30,7 +30,7 @@ const SECTIONS = [
     id: 'sealed',
     n: '03',
     h: 'Sealed votes',
-    d: 'When you answer, the active public feed keeps aggregate results hidden until cutoff. The beta stores an encrypted answer, a validated answer for resolution/reputation, and a receipt hash so the workflow can be audited while stronger end-to-end sealing matures.',
+    d: 'When you answer, the active public feed keeps aggregate results hidden until cutoff. The server checks your answer is one of the options, seals it to the poll’s public key and stores only the sealed answer and a receipt hash. No readable copy of your answer is kept. At resolution the ballots are opened in memory to count them: only the totals per answer are published, and your profile records only whether your answer matched.',
     bullets: [
       'Active vote split hidden publicly',
       'Encrypted answer plus receipt hash',

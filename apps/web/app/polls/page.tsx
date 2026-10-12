@@ -8,9 +8,8 @@ export const metadata: Metadata = {
 }
 
 export default async function Page() {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const [dbPolls, rawTopics] = await Promise.all([getActivePolls(), getTopics()]) as [any[], any[]]
+  const [dbPolls, rawTopics] = await Promise.all([getActivePolls(), getTopics()])
   const voteCounts = await getVoteCountsByPoll(dbPolls.map((p) => p.id))
   const polls = dbPolls.map((p) => mapDbPollToUiPoll(p, voteCounts.get(p.id) ?? 0, false))
-  return <FeedPage polls={polls} topics={rawTopics.map((t) => t.label as string)} />
+  return <FeedPage polls={polls} topics={rawTopics.map((t) => t.label)} />
 }

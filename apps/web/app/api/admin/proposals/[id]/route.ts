@@ -1,115 +1,85 @@
-import { createClient, createServiceClient } from '@/lib/supabase-server'
 import { NextResponse } from 'next/server'
-import { generatePollKeypair } from '@civicsignal/crypto'
+import { queryOne, withTransaction, type PollProposalRow, type PoolClient } from '@civicsignal/db'
+import { getRequestViewer } from '@/lib/auth/session'
+import { assertNoSecretKey, requireAdmin } from '@/lib/authz'
+import { HttpError, isUuid, mutation, readJson } from '@/lib/http'
+import { createDraftPoll } from '@/lib/polls'
+import { assertValidProposal, optionsOf, proposalEdits, setClause, type ProposalFields } from '@/lib/proposals'
 
-const t = (client: ReturnType<typeof createServiceClient>, table: string): any => (client as any).from(table)
 const ACTIONS = ['approve', 'reject', 'changes_requested', 'update'] as const
-
 type Action = typeof ACTIONS[number]
 type Params = { params: Promise<{ id: string }> }
 
-const editableFields = (body: any) => {
-  const out: Record<string, unknown> = {}
-  if (typeof body.question === 'string') out.question = body.question.trim()
-  if (typeof body.topicId === 'string') out.topic_id = body.topicId
-  if (typeof body.region === 'string') out.region = body.region.trim()
-  if (Array.isArray(body.options)) out.options = body.options.map(String).map((o: string) => o.trim()).filter(Boolean)
-  if (typeof body.sourceOfTruth === 'string') out.source_of_truth = body.sourceOfTruth.trim()
-  if (typeof body.resolutionCriteria === 'string') out.resolution_criteria = body.resolutionCriteria.trim()
-  if (body.cutoffAt) out.cutoff_at = new Date(body.cutoffAt).toISOString()
-  if (body.resolvesAt) out.resolves_at = new Date(body.resolvesAt).toISOString()
-  return out
+// Update a proposal: the edited columns plus the given moderation columns (fixed names only).
+const updateProposal = (client: PoolClient, id: string, values: Record<string, unknown>) => {
+  const set = setClause(values, 2)
+  return queryOne<PollProposalRow>(
+    `update poll_proposals set ${set.sql}, updated_at = now() where id = $1 returning *`,
+    [id, ...set.params],
+    client,
+  )
 }
 
-export const PATCH = async (req: Request, { params }: Params) => {
-  try {
-    const { id } = await params
-    const supabase = await createClient()
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) return NextResponse.json({ success: false, error: 'Authentication required' }, { status: 401 })
+// R8, D14: moderation is admin-only. An approved proposal (it has its poll) cannot be moderated
+// again. Edits and approval must leave a proposal that passes the creation rules. Approval creates
+// the draft poll; S1: its secret key goes to poll_secrets in the same transaction and never into the
+// response.
+export const PATCH = mutation(async (req, { params }: Params) => {
+  const viewer = requireAdmin(await getRequestViewer(req))
+  const { id } = await params
+  const body = await readJson(req)
+  const action = body.action as Action
+  if (!ACTIONS.includes(action)) throw new HttpError(400, 'Invalid moderation action', 'INVALID_ACTION')
+  if (!isUuid(id)) throw new HttpError(404, 'Proposal not found')
+  const notes = typeof body.moderatorNotes === 'string' ? body.moderatorNotes : null
+  const edits = proposalEdits(body)
 
-    const db = createServiceClient()
-    const { data: admin } = await (db.from('profiles') as any).select('is_admin').eq('id', user.id).single()
-    if (!admin?.is_admin) return NextResponse.json({ success: false, error: 'Admin access required' }, { status: 403 })
+  const result = await withTransaction(async (client) => {
+    const current = await queryOne<PollProposalRow>('select * from poll_proposals where id = $1 for update', [id], client)
+    if (!current) throw new HttpError(404, 'Proposal not found')
+    if (current.status === 'approved' || current.poll_id) {
+      throw new HttpError(409, 'Proposal is already approved', 'INVALID_STATUS')
+    }
 
-    const body = await req.json()
-    const action = body.action as Action
-    if (!ACTIONS.includes(action)) return NextResponse.json({ success: false, error: 'Invalid moderation action', code: 'INVALID_ACTION' }, { status: 400 })
+    const merged: ProposalFields = {
+      question: current.question,
+      topic_id: current.topic_id,
+      region: current.region,
+      options: optionsOf(current.options),
+      source_of_truth: current.source_of_truth,
+      resolution_criteria: current.resolution_criteria,
+      cutoff_at: current.cutoff_at,
+      resolves_at: current.resolves_at,
+      ...edits,
+    }
+    if (action === 'approve' || Object.keys(edits).length > 0) await assertValidProposal(merged, client)
 
-    const { data: current, error: fetchError } = await t(db, 'poll_proposals').select('*').eq('id', id).single()
-    if (fetchError || !current) return NextResponse.json({ success: false, error: 'Proposal not found' }, { status: 404 })
-
-    const edits = editableFields(body)
     if (action === 'update') {
-      const { data, error } = await t(db, 'poll_proposals')
-        .update({ ...edits, moderator_notes: body.moderatorNotes ?? current.moderator_notes, updated_at: new Date().toISOString() })
-        .eq('id', id)
-        .select()
-        .single()
-      if (error) return NextResponse.json({ success: false, error: error.message }, { status: 500 })
-      return NextResponse.json({ success: true, proposal: data })
+      return { proposal: await updateProposal(client, id, { ...edits, moderator_notes: notes ?? current.moderator_notes }) }
     }
 
     if (action === 'reject' || action === 'changes_requested') {
-      const { data, error } = await t(db, 'poll_proposals')
-        .update({
-          ...edits,
-          status: action,
-          moderator_id: user.id,
-          moderator_notes: body.moderatorNotes ?? null,
-          moderated_at: new Date().toISOString(),
-          updated_at: new Date().toISOString(),
-        })
-        .eq('id', id)
-        .select()
-        .single()
-      if (error) return NextResponse.json({ success: false, error: error.message }, { status: 500 })
-      return NextResponse.json({ success: true, proposal: data })
+      const proposal = await updateProposal(client, id, {
+        ...edits,
+        status: action === 'reject' ? 'rejected' : 'changes_requested',
+        moderator_id: viewer.id,
+        moderator_notes: notes,
+        moderated_at: new Date().toISOString(),
+      })
+      return { proposal }
     }
 
-    const proposal = { ...current, ...edits }
-    const keypair = generatePollKeypair()
-    const { data: poll, error: pollError } = await t(db, 'polls')
-      .insert({
-        topic_id: proposal.topic_id,
-        question: proposal.question,
-        region: proposal.region,
-        options: proposal.options,
-        source_of_truth: proposal.source_of_truth,
-        resolution_criteria: proposal.resolution_criteria,
-        cutoff_at: proposal.cutoff_at,
-        resolves_at: proposal.resolves_at,
-        status: 'draft',
-        created_by: proposal.proposed_by,
-      })
-      .select('id')
-      .single()
-    if (pollError || !poll) return NextResponse.json({ success: false, error: pollError?.message ?? 'Failed to create poll draft' }, { status: 500 })
-
-    await t(db, 'audit_commitments').insert({
+    const { poll } = await createDraftPoll(client, { ...merged, created_by: current.proposed_by }, { proposalId: id })
+    const proposal = await updateProposal(client, id, {
+      ...edits,
+      status: 'approved',
       poll_id: poll.id,
-      merkle_root: keypair.publicKey,
-      batch_type: 'vote',
-      metadata: { type: 'keypair', publicKey: keypair.publicKey, secretKey: keypair.secretKey, proposalId: id },
+      moderator_id: viewer.id,
+      moderator_notes: notes ?? 'Approved into draft poll.',
+      moderated_at: new Date().toISOString(),
     })
+    return { proposal, poll: { id: poll.id } }
+  })
 
-    const { data: updated, error: updateError } = await t(db, 'poll_proposals')
-      .update({
-        ...edits,
-        status: 'approved',
-        poll_id: poll.id,
-        moderator_id: user.id,
-        moderator_notes: body.moderatorNotes ?? 'Approved into draft poll.',
-        moderated_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      })
-      .eq('id', id)
-      .select()
-      .single()
-    if (updateError) return NextResponse.json({ success: false, error: updateError.message }, { status: 500 })
-
-    return NextResponse.json({ success: true, proposal: updated, poll })
-  } catch {
-    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 })
-  }
-}
+  return NextResponse.json(assertNoSecretKey({ success: true, ...result }))
+})

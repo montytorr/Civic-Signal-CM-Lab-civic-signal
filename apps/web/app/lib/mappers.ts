@@ -1,6 +1,21 @@
 import type { Poll } from '@civicsignal/ui'
 
-export const mapDbPollToUiPoll = (dbPoll: any, voteCount: number, hasVoted: boolean): Poll => {
+/** The poll columns the UI card needs, as the poll queries return them. */
+export type DbPollLike = {
+  id: string
+  question: string
+  region: string
+  cutoff_at: string
+  resolves_at?: string | null
+  options: unknown
+  source_of_truth: string
+  resolution_criteria?: string | null
+  created_at?: string | null
+  status?: string | null
+  topics?: { slug?: string } | null
+}
+
+export const mapDbPollToUiPoll = (dbPoll: DbPollLike, voteCount: number, hasVoted: boolean): Poll => {
   const cutoff = new Date(dbPoll.cutoff_at)
   const now = new Date()
   const diff = cutoff.getTime() - now.getTime()
@@ -23,7 +38,7 @@ export const mapDbPollToUiPoll = (dbPoll: any, voteCount: number, hasVoted: bool
     cutoffLabel,
     resolves: dbPoll.resolves_at?.split('T')[0] ?? '',
     participants: voteCount,
-    options: Array.isArray(dbPoll.options) ? dbPoll.options : JSON.parse(dbPoll.options),
+    options: Array.isArray(dbPoll.options) ? dbPoll.options.map(String) : JSON.parse(String(dbPoll.options)),
     source: dbPoll.source_of_truth,
     resolutionCriteria: dbPoll.resolution_criteria ?? null,
     createdAt: dbPoll.created_at ?? null,

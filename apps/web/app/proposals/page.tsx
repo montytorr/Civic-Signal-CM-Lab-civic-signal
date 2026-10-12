@@ -1,5 +1,5 @@
 import type { Metadata } from 'next'
-import { createClient } from '@/lib/supabase-server'
+import { getViewer } from '@/lib/auth/server'
 import { getPollProposals, getSourceTemplates, getTopics } from '@/lib/queries'
 import { ProposalsPage } from '@/components/proposals-page'
 
@@ -9,13 +9,12 @@ export const metadata: Metadata = {
 }
 
 export default async function Page() {
-  const supabase = await createClient()
-  const [{ data: { user } }, topics, templates, proposals] = await Promise.all([
-    supabase.auth.getUser(),
+  const [viewer, topics, templates, proposals] = await Promise.all([
+    getViewer(),
     getTopics(),
     getSourceTemplates(),
     getPollProposals(),
   ])
 
-  return <ProposalsPage topics={topics as any} templates={templates as any} proposals={proposals as any} signedIn={Boolean(user)} />
+  return <ProposalsPage topics={topics} templates={templates} proposals={proposals} signedIn={Boolean(viewer)} />
 }

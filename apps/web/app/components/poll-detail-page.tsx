@@ -4,16 +4,17 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { Eyebrow, TopicBadge, HiddenBadge, Badge, Btn, topicById } from '@civicsignal/ui'
 import type { Poll } from '@civicsignal/ui'
-import { encryptVoteClient } from '@/lib/encrypt-vote'
 
 interface Props {
   poll: Poll
-  existingVote: { encrypted_answer: string; answer: string | null; receipt_hash: string; created_at: string } | null
+  /** The viewer's own vote: its receipt, and once the poll resolves whether it matched. Never the answer. */
+  existingVote: { receipt_hash: string; created_at: string; matched: boolean | null } | null
   publicKey: string | null
 }
 
 export const PollDetailPage = ({ poll, existingVote, publicKey }: Props) => {
-  const [choice, setChoice] = useState<string | null>(existingVote?.answer ?? null)
+  // Only what this browser chose just now; a vote loaded from the server stays sealed.
+  const [choice, setChoice] = useState<string | null>(null)
   const [submitted, setSubmitted] = useState(!!existingVote)
   const [receipt, setReceipt] = useState<{ hash: string; shortHash: string; timestamp: string } | null>(
     existingVote
@@ -28,11 +29,11 @@ export const PollDetailPage = ({ poll, existingVote, publicKey }: Props) => {
     setLoading(true)
     setError(null)
     try {
-      const encryptedAnswer = publicKey ? encryptVoteClient(choice, publicKey) : choice
+      // The server seals the answer to the poll's public key and stores only the ciphertext.
       const res = await fetch(`/api/polls/${poll.id}/vote`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ encryptedAnswer, answer: choice }),
+        body: JSON.stringify({ answer: choice }),
       })
       const json = await res.json()
       if (!res.ok || !json.success) {
@@ -212,12 +213,20 @@ export const PollDetailPage = ({ poll, existingVote, publicKey }: Props) => {
                   <Eyebrow>Receipt · sealed</Eyebrow>
                 </div>
                 <p style={{ margin: '10px 0 0', fontSize: 13.5, color: 'var(--color-parchment-ink-soft)', lineHeight: 1.55 }}>
-                  {choice && (
+                  {choice ? (
                     <>
                       Your sealed answer is{' '}
                       <span style={{ color: 'var(--color-parchment-ink)', fontWeight: 600 }}>{choice}</span>.
                       {' '}
                     </>
+                  ) : existingVote?.matched != null ? (
+                    <>
+                      Your answer{' '}
+                      <span style={{ color: 'var(--color-parchment-ink)', fontWeight: 600 }}>{existingVote.matched ? 'matched' : 'did not match'}</span>
+                      {' '}the outcome.{' '}
+                    </>
+                  ) : (
+                    <>Your answer stays sealed until resolution. </>
                   )}
                   Your encrypted answer was committed to the public log
                   {receiptTs && (
