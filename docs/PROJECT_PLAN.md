@@ -332,7 +332,7 @@ Open APIs and public datasets allow researchers, journalists, and civic institut
 ### MVP stack
 
 - Next.js app
-- Supabase Postgres + Auth
+- Supabase Postgres + Auth (historical: the first MVP ran on Supabase; since October 2026 the stack is plain Postgres with app-owned auth, see the README's "How it runs")
 - Server-side poll resolution jobs
 - Redis or Postgres queues if needed
 - Object storage for receipts/exports
@@ -483,9 +483,9 @@ My favorite: CivicSignal. It says what it does without sounding like a DAO from 
 - [x] Draft poll schema and reputation formula: see `docs/MVP_SCHEMA.md`.
 - [x] Create product spec from this project file: see `docs/PRODUCT_SPEC.md`.
 - [x] Build landing page and public product surfaces.
-- [x] Build database schema and Supabase migrations.
+- [x] Build database schema and migrations (first on Supabase; now plain Postgres, `packages/db`).
 - [x] Build MVP voting flow with sealed active vote splits.
-- [x] Add verification v1 through Supabase auth, profiles, rate limits, and invite/onboarding flows.
+- [x] Add verification v1: email verification, profiles, rate limits, and invite/onboarding flows (Supabase auth at first; app-owned auth since October 2026).
 - [x] Add admin creation, publication, proposal moderation, resolution, and dispute review flows.
 - [x] Add public methodology, roadmap, audit, panels, proposal, archive, and leaderboard pages.
 - [x] Seed 25-50 serious launch polls.
