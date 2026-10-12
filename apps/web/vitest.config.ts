@@ -8,6 +8,9 @@ export default defineConfig({
     environment: 'jsdom',
     setupFiles: ['./test/setup.ts'],
     include: ['test/**/*.test.{ts,tsx}'],
+    // The Postgres suites hash passwords (argon2) and create and drop databases in parallel files.
+    testTimeout: 30_000,
+    hookTimeout: 60_000,
   },
   resolve: {
     alias: {
