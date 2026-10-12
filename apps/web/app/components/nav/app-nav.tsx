@@ -1,11 +1,8 @@
 'use client'
 
-import { useEffect, useState } from 'react'
 import Link from 'next/link'
 import { useRouter, usePathname } from 'next/navigation'
 import { CsWordmark } from '@civicsignal/ui'
-import { createClient } from '@/lib/supabase-browser'
-import type { User } from '@supabase/supabase-js'
 
 const PRIMARY_TABS = [
   { label: 'Polls', href: '/polls' },
@@ -23,57 +20,23 @@ const SECONDARY_TABS = [
   { label: 'Reports', href: '/reports' },
 ]
 
-export const AppNav = () => {
+/** The signed-in user as the root layout reads it from the session on the server. */
+export type NavViewer = { handle: string; isAdmin: boolean } | null
+
+export const AppNav = ({ viewer }: { viewer: NavViewer }) => {
   const router = useRouter()
   const pathname = usePathname()
-  const [user, setUser] = useState<User | null>(null)
-  const [handle, setHandle] = useState<string | null>(null)
-  const [isAdmin, setIsAdmin] = useState(false)
-  const [loading, setLoading] = useState(true)
-
-  useEffect(() => {
-    const supabase = createClient()
-
-    const fetchUser = async () => {
-      const { data: { user: currentUser } } = await supabase.auth.getUser()
-      setUser(currentUser)
-
-      if (currentUser) {
-        const { data: profile } = await supabase
-          .from('profiles')
-          .select('handle, is_admin')
-          .eq('id', currentUser.id)
-          .single() as { data: { handle: string; is_admin: boolean } | null; error: unknown }
-
-        setHandle(profile?.handle ?? null)
-        setIsAdmin(profile?.is_admin ?? false)
-      }
-
-      setLoading(false)
-    }
-
-    fetchUser()
-
-    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
-      setUser(session?.user ?? null)
-      if (!session?.user) {
-        setHandle(null)
-        setIsAdmin(false)
-      }
-    })
-
-    return () => subscription.unsubscribe()
-  }, [])
+  const handle = viewer?.handle || null
+  const isAdmin = viewer?.isAdmin ?? false
 
   const handleSignOut = async () => {
-    const supabase = createClient()
-    await supabase.auth.signOut()
+    await fetch('/api/auth/logout', { method: 'POST' }).catch(() => undefined)
     router.push('/')
     router.refresh()
   }
 
   const accountTabs = [
-    ...(user ? [{ label: 'Start', href: '/onboarding' }, { label: 'Profile', href: handle ? `/u/${handle}` : '/u' }] : []),
+    ...(viewer ? [{ label: 'Start', href: '/onboarding' }, { label: 'Profile', href: handle ? `/u/${handle}` : '/u' }] : []),
     ...(isAdmin ? [{ label: 'Admin', href: '/admin' }] : []),
   ]
 
@@ -189,7 +152,7 @@ export const AppNav = () => {
       </div>
 
       <div className="flex items-center gap-3 shrink-0">
-        {loading ? null : user && handle ? (
+        {viewer && handle ? (
           <>
             <span
               className="cs-hide-mobile font-mono text-parchment-muted tracking-[0.04em]"

@@ -9,25 +9,26 @@
     "lint": "eslint .",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "test:pg": "sh ../../packages/db/scripts/with-test-postgres.sh vitest run"
   },
   "dependencies": {
     "@civicsignal/crypto": "workspace:*",
     "@civicsignal/db": "workspace:*",
     "@civicsignal/ui": "workspace:*",
-    "@supabase/ssr": "^0.5",
-    "@supabase/supabase-js": "^2",
+    "@node-rs/argon2": "^2.2.2",
     "next": "^16",
+    "pg": "^8",
     "react": "^19",
     "react-dom": "^19",
-    "resend": "^6.12.3",
-    "tweetnacl": "^1"
+    "resend": "^6.12.3"
   },
   "devDependencies": {
     "@tailwindcss/postcss": "^4.2.4",
     "@testing-library/jest-dom": "^6.9.1",
     "@testing-library/react": "^16.3.2",
     "@types/node": "^22",
+    "@types/pg": "^8",
     "@types/react": "^19",
     "@types/react-dom": "^19",
     "@vitejs/plugin-react": "^6.0.1",

@@ -109,7 +109,7 @@ export default function SignUpPage() {
               }}
             >
               <strong style={{ display: 'block', marginBottom: 6 }}>Almost there.</strong>
-              Check your email for a CivicSignal confirmation link. After confirming, we’ll take you straight into onboarding.
+              Check your email for a CivicSignal confirmation link. After confirming, sign in and we’ll take you straight into onboarding.
             </div>
           ) : (
             <form onSubmit={handleSubmit}>

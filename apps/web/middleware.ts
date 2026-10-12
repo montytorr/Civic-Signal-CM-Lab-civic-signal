@@ -1,84 +1,33 @@
-import { createServerClient, type CookieOptions } from '@supabase/ssr'
 import { NextResponse, type NextRequest } from 'next/server'
+import { SESSION_TTL_MS, sessionCookie, sessionCookieName } from '@/lib/auth/cookie'
+
+// Edge-safe: this only checks that a session cookie is present. Pages and routes validate the
+// session against the database themselves (lib/auth), so a forged cookie gets no further than here.
 
 const PROTECTED_PREFIXES = ['/admin']
-const PROTECTED_EXACT = ['/u', '/invites']
+const PROTECTED_EXACT = ['/u', '/invites', '/onboarding', '/panels/me']
 
 const isProtected = (pathname: string) =>
   PROTECTED_EXACT.includes(pathname) ||
   PROTECTED_PREFIXES.some((prefix) => pathname === prefix || pathname.startsWith(prefix + '/'))
 
-/* ------------------------------------------------------------------ */
-/*  Lightweight in-memory rate limiter for auth endpoints (edge-safe)  */
-/* ------------------------------------------------------------------ */
-const AUTH_RATE_PATHS = ['/auth/signin', '/auth/signup']
-const AUTH_MAX_ATTEMPTS = 10
-const AUTH_WINDOW_MS = 15 * 60 * 1000 // 15 minutes
-
-const authAttempts = new Map<string, { count: number; resetAt: number }>()
-
-const isAuthRateLimited = (ip: string): boolean => {
-  const now = Date.now()
-  const entry = authAttempts.get(ip)
-
-  if (!entry || now > entry.resetAt) {
-    authAttempts.set(ip, { count: 1, resetAt: now + AUTH_WINDOW_MS })
-    return false
-  }
-
-  if (entry.count >= AUTH_MAX_ATTEMPTS) {
-    return true
-  }
-
-  entry.count++
-  return false
-}
-
-export const middleware = async (request: NextRequest) => {
+export const middleware = (request: NextRequest) => {
   const { pathname } = request.nextUrl
+  const token = request.cookies.get(sessionCookieName())?.value
 
-  // Rate-limit auth endpoints by IP before any other processing
-  if (AUTH_RATE_PATHS.some((p) => pathname.startsWith(p)) && request.method === 'POST') {
-    const ip = request.headers.get('x-forwarded-for')?.split(',')[0]?.trim() ?? 'unknown'
-    if (isAuthRateLimited(ip)) {
-      return NextResponse.json(
-        { success: false, error: 'Too many authentication attempts. Try again later.', code: 'RATE_LIMITED' },
-        { status: 429, headers: { 'Retry-After': '900' } }
-      )
-    }
-  }
-
-  let response = NextResponse.next({
-    request,
-  })
-
-  const supabase = createServerClient(
-    process.env.NEXT_PUBLIC_SUPABASE_URL!,
-    process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
-    {
-      cookies: {
-        getAll: () => request.cookies.getAll(),
-        setAll: (cookiesToSet: { name: string; value: string; options: CookieOptions }[]) => {
-          cookiesToSet.forEach(({ name, value }) =>
-            request.cookies.set(name, value)
-          )
-          response = NextResponse.next({ request })
-          cookiesToSet.forEach(({ name, value, options }) =>
-            response.cookies.set(name, value, options as Parameters<typeof response.cookies.set>[2])
-          )
-        },
-      },
-    }
-  )
-
-  const { data: { user } } = await supabase.auth.getUser()
-
-  if (isProtected(pathname) && !user) {
+  if (isProtected(pathname) && !token) {
     const redirectUrl = request.nextUrl.clone()
     redirectUrl.pathname = '/auth/signin'
+    redirectUrl.search = ''
     return NextResponse.redirect(redirectUrl)
   }
 
+  const response = NextResponse.next()
+  // Sliding expiry: keep the cookie as long-lived as the session it carries (the database extends
+  // the session on use). Page loads only; route handlers set or clear the cookie themselves.
+  if (token && request.method === 'GET' && !pathname.startsWith('/api/')) {
+    response.cookies.set(sessionCookie(token, new Date(Date.now() + SESSION_TTL_MS)))
+  }
   return response
 }
 
