@@ -58,3 +58,6 @@ apps/web/supabase/.temp/
 
 # TypeScript incremental build info (rewritten by every typecheck)
 *.tsbuildinfo
+
+# Claude Code / Drove worker worktrees
+.claude/worktrees/
