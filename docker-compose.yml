@@ -1,34 +1,57 @@
+# CivicSignal on clawdius. scripts/deploy.sh drives this file.
+#
+# Runtime configuration is one file outside the checkout, never committed:
+#   ${CIVICSIGNAL_ENV_FILE:-/home/runner/civicsignal-secrets/web.env}
+# with DATABASE_URL, SESSION_SECRET, RESEND_API_KEY, EMAIL_FROM and APP_URL
+# (see .env.example). Nothing secret is a build argument.
+#
+# Networks (both external, created outside this file):
+#   clawdius-data       reaches the shared Postgres as clawdius-postgres:5432
+#   trading-v2-network  Traefik (trading-bot-v2-traefik) routes HTTPS here
+
+name: civicsignal
+
 services:
+  # One-off: `docker compose --profile tools run --rm migrate` applies
+  # packages/db/migrations over DATABASE_URL as the app role. It reuses the
+  # resolver image (which carries packages/db), so build resolver first.
+  migrate:
+    profiles: [tools]
+    image: civicsignal-resolver:latest
+    pull_policy: never
+    command: ["pnpm", "--filter", "@civicsignal/db", "db:migrate"]
+    env_file: ${CIVICSIGNAL_ENV_FILE:-/home/runner/civicsignal-secrets/web.env}
+    networks:
+      - database
+
   web:
     build:
       context: .
       dockerfile: Dockerfile
       args:
-        NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-        NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
-        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL}
+        # Public, not secret: baked into the client bundle for links and metadata.
+        NEXT_PUBLIC_SITE_URL: ${APP_URL:-https://civicsignal.montytorr.com}
     image: civicsignal-web:latest
     container_name: civicsignal-web
     expose:
       - "3000"
     env_file: ${CIVICSIGNAL_ENV_FILE:-/home/runner/civicsignal-secrets/web.env}
-    environment:
-      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
-      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
-      # Database migrations run through docker exec; never retain a retired
-      # managed database URL in an application container.
-      SUPABASE_DB_URL: ""
     restart: unless-stopped
     networks:
-      - trading-v2-network
+      - proxy
+      - database
     labels:
       - "traefik.enable=true"
+      - "traefik.docker.network=trading-v2-network"
       - "traefik.http.routers.civicsignal.rule=Host(`civicsignal.montytorr.com`)"
       - "traefik.http.routers.civicsignal.entrypoints=websecure"
       - "traefik.http.routers.civicsignal.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.civicsignal.middlewares=civicsignal-headers"
       - "traefik.http.services.civicsignal.loadbalancer.server.port=3000"
-      - "traefik.docker.network=trading-v2-network"
+      - "traefik.http.middlewares.civicsignal-headers.headers.stsSeconds=31536000"
+      - "traefik.http.middlewares.civicsignal-headers.headers.stsIncludeSubdomains=true"
+      - "traefik.http.middlewares.civicsignal-headers.headers.frameDeny=true"
+      - "traefik.http.middlewares.civicsignal-headers.headers.contentTypeNosniff=true"
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://127.0.0.1:3000/api/health"]
       interval: 30s
@@ -43,18 +66,20 @@ services:
     image: civicsignal-resolver:latest
     container_name: civicsignal-resolver
     env_file: ${CIVICSIGNAL_ENV_FILE:-/home/runner/civicsignal-secrets/web.env}
-    environment:
-      NEXT_PUBLIC_SUPABASE_URL: ${NEXT_PUBLIC_SUPABASE_URL}
-      NEXT_PUBLIC_SUPABASE_ANON_KEY: ${NEXT_PUBLIC_SUPABASE_ANON_KEY}
-      SUPABASE_SERVICE_ROLE_KEY: ${SUPABASE_SERVICE_ROLE_KEY}
-      SUPABASE_DB_URL: ""
     restart: unless-stopped
+    # Not routed by Traefik (no traefik.enable label); joins the proxy network
+    # only for outbound access alongside web.
     networks:
-      - trading-v2-network
+      - proxy
+      - database
     depends_on:
       web:
         condition: service_healthy
 
 networks:
-  trading-v2-network:
+  proxy:
+    name: trading-v2-network
+    external: true
+  database:
+    name: clawdius-data
     external: true
