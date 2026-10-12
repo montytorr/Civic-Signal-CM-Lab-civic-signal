@@ -293,8 +293,8 @@ export const RoadmapPage = () => (
               maxWidth: 600,
             }}
           >
-            "This roadmap is a public commitment, not a marketing timeline. Each phase ships
-            only when the previous one has earned trust through real usage and public audit."
+            &quot;This roadmap is a public commitment, not a marketing timeline. Each phase ships
+            only when the previous one has earned trust through real usage and public audit.&quot;
           </p>
         </div>
         <Eyebrow dim>Updated 2026-05-12</Eyebrow>
