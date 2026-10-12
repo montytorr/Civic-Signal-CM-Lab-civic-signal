@@ -37,17 +37,30 @@ Before opening the repository broadly, keep these files current: `README.md`, `C
 
 ## Quickstart
 
+You need Node.js 22+, pnpm 9.15.4 and a Postgres 17 server (a Docker container is enough).
+
 ```bash
-git clone https://github.com/montytorr/civicsignal.git
-cd civicsignal
+git clone https://github.com/montytorr/civic-signal.git
+cd civic-signal
 corepack enable
 corepack prepare pnpm@9.15.4 --activate
 pnpm install
-cp .env.example apps/web/.env.local
+
+# A local Postgres and the schema
+docker run -d --name civicsignal-pg -e POSTGRES_PASSWORD=dev -e POSTGRES_DB=civicsignal -p 5432:5432 postgres:17-alpine
+export DATABASE_URL=postgresql://postgres:dev@localhost:5432/civicsignal
+pnpm --filter @civicsignal/db db:migrate
+
+# Web env: DATABASE_URL, APP_URL=http://localhost:3000, EMAIL_FROM; RESEND_API_KEY may stay empty
+cp .env.example apps/web/.env.local   # then edit it for local values (drop NODE_ENV)
 pnpm dev
 ```
 
-You need a Supabase project for full local development. Use `.env.example` as the variable checklist; never commit real service-role keys or database URLs.
+Without `RESEND_API_KEY`, development prints verification and password reset links in the server log instead of emailing them. To make your account an admin: `update users set is_admin = true where email = 'you@example.com';`.
+
+Checks: `pnpm typecheck`, `pnpm lint` and `pnpm -r test` need no database. The Postgres suites start a throwaway `postgres:17-alpine` container (Docker required): `pnpm --filter @civicsignal/db test:pg`, `pnpm --filter @civicsignal/resolver test:pg` and `pnpm --filter @civicsignal/web test:pg`. See [CONTRIBUTING.md](CONTRIBUTING.md) for the full workflow and the smoke scripts.
+
+Never commit real secrets, database URLs or Resend keys; `.env.example` is the checklist.
 
 ## Repository layout
 
@@ -55,11 +68,20 @@ You need a Supabase project for full local development. Use `.env.example` as th
 | --- | --- |
 | `apps/web` | Next.js web app and public product surfaces |
 | `packages/ui` | Shared UI components |
-| `packages/db` | Supabase clients, types, and migrations |
+| `packages/db` | Postgres schema and migrations, the server-side `pg` client, row types, and the shared poll scorer |
 | `packages/crypto` | Vote receipt, hashing, and future commitment utilities |
-| `services/resolver` | Background poll resolution service |
+| `services/resolver` | Background service: closes polls at cutoff, commits Merkle roots, scores resolved polls |
 | `docs` | Product, schema, design, and launch planning docs |
-| `scripts` | Smoke checks and operational helpers |
+| `scripts` | Smoke checks, seed script, `deploy.sh` and host setup (`scripts/host`) |
+
+## How it runs
+
+- **Database:** plain Postgres 17. In production that is the shared `clawdius-postgres` container on clawdius, database `civicsignal`, reached only by the server as the `civicsignal_app` role over `DATABASE_URL`. There is no row-level security: every access rule is an explicit, tested server check, listed in [docs/authz-policies.md](docs/authz-policies.md). Migrations live in `packages/db/migrations`.
+- **Accounts:** app-owned auth. Email and password (argon2id), a random session token in an httpOnly cookie (`__Host-cs_session` in production) whose SHA-256 is stored in `sessions`, 30-day sliding sessions, email verification and password reset through single-use tokens sent with [Resend](https://resend.com) (`RESEND_API_KEY`, `EMAIL_FROM`, links built from `APP_URL`). Mutating requests must come from `APP_URL`'s origin.
+- **Sealed votes:** the server checks the answer, encrypts it to the poll's public key and stores only the ciphertext and a receipt hash. The poll's secret key lives in the server-only `poll_secrets` table. At resolution the ballots are opened in memory: only per-answer totals (`poll_results`, public once resolved) and each voter's correctness are written.
+- **Reputation privacy:** a topic score is public only as a coarse tier, from Contributor (5 correct answers) up. Exact scores, per-poll results and "your vote" are visible to their owner alone.
+- **Production:** https://civicsignal.montytorr.com, on clawdius. Docker Compose runs `civicsignal-web` (Next.js standalone, behind Traefik) and `civicsignal-resolver` (non-root); runtime configuration comes from `/home/runner/civicsignal-secrets/web.env`.
+- **Deploy:** push (or merge) to `main` in [montytorr/civic-signal](https://github.com/montytorr/civic-signal). The `Deploy CivicSignal` workflow runs on the self-hosted runner `civicsignal-runner` on clawdius, which runs `scripts/deploy.sh`: tests, image builds, migrations, start, health check. A commit whose message contains `[skip ci]` does not deploy.
 
 
 ## Core Thesis
@@ -403,12 +425,12 @@ Open APIs and public datasets allow researchers, journalists, and civic institut
 
 ### MVP stack
 
-- Next.js app
-- Supabase Postgres + Auth
-- Server-side poll resolution jobs
-- Redis or Postgres queues if needed
-- Object storage for receipts/exports
-- Optional Merkle tree commitment script
+As built (see [How it runs](#how-it-runs)):
+
+- Next.js app (server components and route handlers)
+- Postgres with app-owned auth (the first MVP used Supabase Postgres and Auth; retired in October 2026)
+- Background resolver service for closing polls, Merkle commitments and scoring
+- Merkle tree commitments, published in the public audit log
 - Later: EVM anchoring contract for poll/reputation roots
 
 ### Core tables
@@ -555,13 +577,14 @@ My favorite: CivicSignal. It says what it does without sounding like a DAO from 
 - [x] Draft poll schema and reputation formula.
 - [x] Create product spec from this project file.
 - [x] Build landing page and public product surfaces.
-- [x] Build database schema and Supabase migrations.
+- [x] Build database schema and migrations (first on Supabase; now plain Postgres, `packages/db`).
 - [x] Build MVP voting flow with sealed active vote splits.
-- [x] Add verification v1 through Supabase auth, profiles, rate limits, and invite/onboarding flows.
+- [x] Add verification v1: email verification, profiles, rate limits, and invite/onboarding flows (now app-owned auth).
 - [x] Add admin creation, publication, proposal moderation, resolution, and dispute review flows.
 - [x] Add public methodology, roadmap, audit, panels, proposal, archive, and leaderboard pages.
 - [x] Seed 25-50 serious launch polls.
 - [x] Add proposal lifecycle and trusted-panel smoke checks.
+- [x] Move off Supabase to plain Postgres with app-owned auth; seal votes server-side; keep reputation tier-only in public (October 2026).
 - [ ] Run first external beta cohort and publish the first weekly public signal report.
 
 ## Decision Log
@@ -578,7 +601,10 @@ My favorite: CivicSignal. It says what it does without sounding like a DAO from 
 - 2026-05-03: Votes are hidden until poll cutoff to reduce herding.
 - 2026-05-03: Positioning is public-good civic platform.
 - 2026-05-03: Project should be open-source by default.
+- 2026-10-12: Reactivated on clawdius on plain Postgres (`clawdius-postgres`); Supabase dropped entirely. Auth is app-owned (argon2id, hashed session tokens, Resend email); every former RLS policy is an explicit, tested server check.
+- 2026-10-12: Votes are stored only sealed; resolution keeps per-answer totals and per-voter correctness, never readable ballots.
+- 2026-10-12: Public reputation is a coarse tier from Contributor up; exact scores and per-poll results are visible only to their owner.
 
 ## Current Status
 
-CivicSignal is in credible pre-launch/beta-readiness mode: the MVP app, public trust surfaces, proposal governance, signed receipts/audit commitments, seeded polls, admin flows, and Trusted Panels path are live. The remaining work is operational launch discipline: keep QA/smoke checks clean, invite the first external cohort, moderate real proposals, and publish the first weekly public signal report.
+CivicSignal is active again since 2026-10-12, at https://civicsignal.montytorr.com, on Postgres with app-owned auth (see [How it runs](#how-it-runs)). It is in credible pre-launch/beta-readiness mode: the MVP app, public trust surfaces, proposal governance, signed receipts/audit commitments, seeded polls, admin flows, and Trusted Panels path are live. The remaining work is operational launch discipline: keep QA/smoke checks clean, invite the first external cohort, moderate real proposals, and publish the first weekly public signal report.
