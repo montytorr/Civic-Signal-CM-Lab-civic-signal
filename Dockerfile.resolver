@@ -1,8 +1,14 @@
 # syntax=docker/dockerfile:1
-# Single-stage image for @civicsignal/resolver (Node.js + tsx)
+# Single-stage image for @civicsignal/resolver (Node.js + tsx). Also runs the one-off `migrate`
+# service in docker-compose.yml (pnpm --filter @civicsignal/db db:migrate).
 
 FROM node:22-alpine
-RUN corepack enable && corepack prepare pnpm@9 --activate
+
+# pnpm comes from corepack. Keep it in a shared location, at the exact version of the root
+# package.json "packageManager", so the unprivileged runtime user finds it without downloading.
+ENV COREPACK_HOME=/opt/corepack \
+    COREPACK_ENABLE_DOWNLOAD_PROMPT=0
+RUN corepack enable && corepack prepare pnpm@9.15.4 --activate
 
 WORKDIR /app
 
@@ -19,6 +25,14 @@ RUN pnpm install --frozen-lockfile --filter @civicsignal/resolver...
 COPY packages/db      ./packages/db
 COPY packages/crypto  ./packages/crypto
 COPY services/resolver ./services/resolver
+
+# Run as the image's unprivileged node user (uid 1000). The code and node_modules stay root-owned
+# and read-only to it; the caches pnpm, npm and tsx may write go to /tmp or the node user's home.
+RUN chmod -R a+rX /opt/corepack
+ENV HOME=/home/node \
+    XDG_CACHE_HOME=/tmp/.cache \
+    npm_config_cache=/tmp/.npm
+USER node
 
 # tsx is available via the resolver's devDependencies (installed above)
 CMD ["pnpm", "--filter", "@civicsignal/resolver", "start"]

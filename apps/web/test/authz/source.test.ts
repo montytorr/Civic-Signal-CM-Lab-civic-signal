@@ -321,6 +321,19 @@ describe('route checks', () => {
 // The retired hosted backend: spelled in two parts so a repo grep for its name stays empty.
 const RETIRED = new RegExp(['supa', 'base'].join(''), 'i')
 
+describe('real HTTP status codes', () => {
+  it('no loading boundary wraps a page that calls notFound() or redirect() (it would turn a 404 or 307 into a streamed 200)', () => {
+    const loadingDirs = [...SOURCES.keys()].filter((file) => /(^|\/)loading\.tsx$/.test(file)).map((file) => file.replace(/\/?loading\.tsx$/, ''))
+    expect(loadingDirs).not.toContain('app')
+    const pages = [...SOURCES].filter(([file, text]) => /\/page\.tsx$/.test(file) && /\b(notFound|redirect)\(/.test(text))
+    expect(pages.map(([file]) => file)).toEqual(expect.arrayContaining(['app/polls/[id]/page.tsx', 'app/u/[handle]/page.tsx']))
+    for (const [file] of pages) {
+      const wrapping = loadingDirs.filter((dir) => file.startsWith(`${dir}/`))
+      expect(wrapping, file).toEqual([])
+    }
+  })
+})
+
 describe('no retired backend', () => {
   it('no source mentions it', () => {
     for (const [file, text] of SOURCES) expect(text, file).not.toMatch(RETIRED)
