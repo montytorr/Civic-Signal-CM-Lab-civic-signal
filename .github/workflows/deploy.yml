@@ -6,6 +6,7 @@ on:
   workflow_dispatch:
 
 env:
+  DISCORD_WEBHOOK_URL: ${{ secrets.DISCORD_WEBHOOK_URL }}
   GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
 jobs:
@@ -24,3 +25,23 @@ jobs:
           set -euo pipefail
           "$GITHUB_WORKSPACE/scripts/deploy.sh" | tee /tmp/civicsignal-deploy.log
           echo "summary=$(tail -1 /tmp/civicsignal-deploy.log)" >> "$GITHUB_OUTPUT"
+
+      - name: Notify Discord success
+        if: success()
+        run: |
+          COMMIT_MSG=$(git -C "$GITHUB_WORKSPACE" log -1 --format='%h %s')
+          BODY=$(jq -n --arg content "✅ **CivicSignal deployed** — \`${COMMIT_MSG}\`\n🌐 <https://civicsignal.montytorr.com>" '{content:$content}')
+          curl -sf -X POST "$DISCORD_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: CivicSignal-CI/1.0" \
+            -d "$BODY" || true
+
+      - name: Notify Discord failure
+        if: failure()
+        run: |
+          COMMIT_MSG=$(git -C "$GITHUB_WORKSPACE" log -1 --format='%h %s' 2>/dev/null || echo "unknown")
+          BODY=$(jq -n --arg content "❌ **CivicSignal deploy FAILED** — \`${COMMIT_MSG}\`\nCheck: <https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}>" '{content:$content}')
+          curl -sf -X POST "$DISCORD_WEBHOOK_URL" \
+            -H "Content-Type: application/json" \
+            -H "User-Agent: CivicSignal-CI/1.0" \
+            -d "$BODY" || true
