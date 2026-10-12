@@ -241,9 +241,14 @@ const scenario = async () => {
     throw new Error(`unexpected resolution tally: ${JSON.stringify(resolved)}`)
   }
 
-  // The resolution gave both voters topic reputation, so the panelist qualifies and the
-  // proposer may dispute.
-  const invited = await admin.call('POST', '/api/admin/panels/invite', { topicId: topic.id, userId: panelist.id, minReputation: 1, activate: true })
+  // The resolution gave both voters topic reputation, so the proposer may dispute. A panel needs
+  // the Contributor tier (score 5), which takes several resolutions; no route grants it, so the
+  // panelist's score is raised here.
+  await db.query(
+    'update user_topic_reputation set score = greatest(score, 5) where user_id = $1 and topic_id = $2',
+    [panelist.id, topic.id],
+  )
+  const invited = await admin.call('POST', '/api/admin/panels/invite', { topicId: topic.id, userId: panelist.id, minTier: 'contributor', activate: true })
   if (invited?.member?.status !== 'active') throw new Error(`unexpected panel invite result: ${JSON.stringify(invited)}`)
 
   const flagged = await proposer.call('POST', `/api/polls/${pollId}/dispute`, {

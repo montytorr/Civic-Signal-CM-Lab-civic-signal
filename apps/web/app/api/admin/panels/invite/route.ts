@@ -3,11 +3,13 @@ import { queryOne } from '@civicsignal/db'
 import { getRequestViewer } from '@/lib/auth/session'
 import { requireAdmin } from '@/lib/authz'
 import { HttpError, isUuid, mutation, readJson } from '@/lib/http'
-import { REPUTATION_TIERS, tierLabel, tierOf, tierRank, type ReputationTier } from '@/lib/reputation'
+import { PANEL_TIERS, PUBLIC_MIN_SCORE, tierLabel, tierOf, tierRank, type ReputationTier } from '@/lib/reputation'
 
 // R7, D10: panel membership is written by admins only. The bar is a minimum tier (P10): a free
-// numeric threshold would let anyone who can call this find a user's exact score by trial.
-// minReputation is still accepted and rounded down to its tier.
+// numeric threshold would let anyone who can call this find a user's exact score by trial. Panel
+// membership is public (P15), so the bar is a public tier (Contributor or higher): a member
+// reveals no more than their public profile does. minReputation is still accepted, rounded to its
+// tier and raised to the public floor.
 export const POST = mutation(async (req) => {
   const viewer = requireAdmin(await getRequestViewer(req))
   const body = await readJson(req)
@@ -19,15 +21,15 @@ export const POST = mutation(async (req) => {
   }
   let minTier: ReputationTier
   if (typeof body.minTier === 'string') {
-    const tier = REPUTATION_TIERS.find((t) => t.key === body.minTier && t.min > 0)
-    if (!tier) throw new HttpError(400, 'minTier must be a tier above newcomer', 'INVALID_BODY')
+    const tier = PANEL_TIERS.find((t) => t.key === body.minTier)
+    if (!tier) throw new HttpError(400, `minTier must be one of: ${PANEL_TIERS.map((t) => t.key).join(', ')}`, 'INVALID_BODY')
     minTier = tier.key
   } else if (body.minReputation === undefined || (typeof body.minReputation === 'number' && Number.isInteger(body.minReputation))) {
-    minTier = tierOf(Math.max(1, (body.minReputation as number | undefined) ?? 1))
+    minTier = tierOf(Math.max(PUBLIC_MIN_SCORE, (body.minReputation as number | undefined) ?? PUBLIC_MIN_SCORE))
   } else {
     throw new HttpError(400, 'minReputation must be an integer', 'INVALID_BODY')
   }
-  const minScore = REPUTATION_TIERS.find((t) => t.key === minTier)!.min
+  const minScore = PANEL_TIERS.find((t) => t.key === minTier)!.min
 
   // Server-internal: the exact score is compared here and never returned.
   const rep = await queryOne<{ score: number }>(

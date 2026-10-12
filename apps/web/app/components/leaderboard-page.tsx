@@ -55,7 +55,7 @@ export const LeaderboardPage = ({
         </div>
 
         <p style={{ marginTop: 8, fontSize: 14, color: 'var(--color-parchment-ink-soft)', maxWidth: 600 }}>
-          Topic reputation reflects sustained accuracy — not activity volume. People are grouped by tier, then listed by handle; exact scores stay private so no one can work out how anyone voted.
+          Topic reputation reflects sustained accuracy — not activity volume. People appear from the Contributor tier (5 correct answers) up, grouped by tier, then listed by handle; exact scores stay private so no one can work out how anyone voted.
         </p>
 
         {/* Topic pills */}

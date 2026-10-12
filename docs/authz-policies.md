@@ -40,7 +40,7 @@ One rule per former `CREATE POLICY`, in migration order.
 | P7 | `votes` | INSERT | Signed-in user | The new row must have `user_id = U`. | "Users can insert own vote" (002) / `with check (auth.uid() = user_id)` |
 | P8 | `votes` | SELECT | Signed-in user | Only rows with `user_id = U`. Nobody else's votes (`encrypted_answer`, `answer`, `receipt_hash`) are readable by a user. | "Users can read own votes" (002) / `using (auth.uid() = user_id)` |
 | P9 | `reputation_events` | SELECT | Signed-in user | Only rows with `user_id = U`. Tightened from the old policy: a per-poll delta next to the public outcome is that user's answer (see Vote privacy). Public profiles never show per-poll results. | "Reputation events are publicly readable" (002) / `using (true)` |
-| P10 | `user_topic_reputation` | SELECT | Anyone (tier); signed-in user (exact) | Anyone may read, per user and topic, the coarse tier of the score (thresholds in `apps/web/app/lib/reputation.ts`, computed in SQL). Only U reads their own exact `score`, `resolved_count` and `correct_count`. Tightened from the old policy: an exact score diffed across a resolution reveals the answer. Lists of users are ordered by tier, then handle, never by exact score. | "User reputation is publicly readable" (002) / `using (true)` |
+| P10 | `user_topic_reputation` | SELECT | Anyone (tier); signed-in user (exact) | Anyone may read, per user and topic, the coarse tier of the score (thresholds in `apps/web/app/lib/reputation.ts`, computed in SQL), and only for topics at the Contributor tier (score 5) or above: below that a topic is not shown at all. Only U reads their own exact `score`, `resolved_count` and `correct_count`. Tightened from the old policy: an exact score diffed across a resolution reveals the answer. Lists of users are ordered by tier, then handle, never by exact score. | "User reputation is publicly readable" (002) / `using (true)` |
 | P11 | `audit_commitments` | SELECT | Anyone | All rows. They contain only public material: a poll's secret key is never here (S1). | "Audit commitments are publicly readable" (002) / `using (true)` |
 | P12 | `disputes` | SELECT | Anyone | All rows. | "Disputes are publicly readable" (002) / `using (true)` |
 | P13 | `disputes` | INSERT | Signed-in user | The new row must have `flagged_by = U`. The policy checked nothing else (its comment mentions reputation, but the expression does not test it). | "Authenticated users can create disputes" (002) / `with check (auth.uid() = flagged_by)` |
@@ -67,17 +67,21 @@ everyone else:
   P24), never per-voter answers.
 - **Per-poll correctness** (`reputation_events.delta`) is readable only by its owner (P9). With
   the public outcome, a delta is the answer (exactly so on a two-option poll).
-- **Topic scores** are public only as a coarse tier (P10). An exact score moves by one per correct
+- **Topic scores** are public only as a coarse tier, and only from the Contributor tier (score 5)
+  up (P10). A reputation row exists only once a vote is scored, so a public "Newcomer" would mean
+  every scored vote was wrong, and "Participant" just after a first resolution would mean it was
+  right. Below the floor a topic is not shown, so scores 0 to 4 look exactly like never having
+  voted there. Panel bars are public tiers too, since panel membership is public (P15). An exact score moves by one per correct
   answer, so comparing it before and after a resolution would give the answer away. The exact
   numbers, the "Your vote: matched or not matched" line and per-poll history are shown only on
   the owner's own profile.
 - Admins see tiers too. The panel invite bar is a minimum tier, not a free number, so the invite
   route cannot be used to probe someone's exact score.
 
-**Residual risk:** a tier is still public. A user whose tier changes right after a single
-resolution, at a tier boundary, hints that they answered that poll correctly. Tiers are wide and
-cross a boundary rarely, but someone watching one user closely across resolutions can still
-learn something from that.
+**Residual risk:** public tiers still move. A user who crosses a public boundary (scores 5, 20
+or 50: appearing as Contributor, or moving up to Trusted or Steward) right after a single
+resolution reveals that they answered that poll correctly. Crossings are rare, but someone
+watching one user closely across resolutions can learn those answers.
 
 ## Poll secret keys (S1)
 

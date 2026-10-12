@@ -37,12 +37,16 @@ export const reservePasswordAttempt = (email: string, ip: string) =>
 /**
  * Limits for routes that send an account email (signup, resend, forgot): per IP, per email+IP, and
  * a looser hourly cap per email. Keying on email+IP means an attacker spending a victim's budget
- * from their own IP does not stop the victim from their IP.
+ * from their own IP does not stop the victim from their IP. Each flow has its own budgets, so
+ * exhausting signup and resend for an email leaves password reset (the owner's way back in)
+ * untouched. Residual: an attacker with at least 4 IPs can spend one flow's hourly budget for an
+ * email (4 x 5 per 15 minutes = 20), blocking that flow for the owner until the hour passes.
  */
-export const limitEmailFlow = (flow: 'signup' | 'resend' | 'reset', email: string, ip: string) => {
+export const limitEmailFlow = (flow: 'signup' | 'resend' | 'forgot', email: string, ip: string) => {
   enforceRateLimit(`${flow}:${email}:${ip}`, 5, AUTH_WINDOW_MS)
   enforceRateLimit(`${flow}:${email}`, 20, HOUR_MS)
 }
 
-/** Per-IP cap on a route that sends account email or consumes a token. */
-export const limitIp = (flow: 'signup' | 'resend' | 'reset' | 'verify', ip: string, max = 10) => enforceRateLimit(`${flow}:${ip}`, max, AUTH_WINDOW_MS)
+/** Per-IP cap on a route that sends account email or consumes a token; one key per route. */
+export const limitIp = (flow: 'signup' | 'resend' | 'forgot' | 'reset' | 'verify', ip: string, max = 10) =>
+  enforceRateLimit(`ip:${flow}:${ip}`, max, AUTH_WINDOW_MS)

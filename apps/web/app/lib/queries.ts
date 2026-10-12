@@ -6,7 +6,7 @@
 import { query, queryOne, type PollRow, type Queryable, type ProfileRow, type SourceTemplateRow, type TopicRow, type VoteRow } from '@civicsignal/db'
 import { PUBLIC_POLL_STATUSES, RESULTS_VISIBLE_STATUS, canReadExactReputation, canReadReputationEvents, canReadVote, type Viewer } from '@/lib/authz'
 import { isUuid } from '@/lib/http'
-import { tierRankSql, tierSql, type ReputationTier } from '@/lib/reputation'
+import { publicTierSql, tierRankSql, tierSql, type ReputationTier } from '@/lib/reputation'
 
 // P5 as a SQL predicate on a polls alias.
 const publicPoll = (alias: string) => `${alias}.status in (${PUBLIC_POLL_STATUSES.map((s) => `'${s}'`).join(', ')})`
@@ -172,12 +172,15 @@ export const getOwnReputation = (viewer: Viewer) =>
     [viewer.id],
   )
 
-/** P10 (public): a user's topic reputation as tiers only. */
+/**
+ * P10 (public): a user's topic reputation as tiers only, and only topics at PUBLIC_MIN_TIER or
+ * above: a lower score looks the same as never having voted in the topic.
+ */
 export const getPublicReputation = (userId: string) =>
   query<TopicReputation>(
     `select r.topic_id, ${tierSql('r.score')} as tier, ${topicJson('t')} as topics
      from user_topic_reputation r left join topics t on t.id = r.topic_id
-     where r.user_id = $1
+     where r.user_id = $1 and ${publicTierSql('r.score')}
      order by ${tierRankSql('r.score')} desc, t.label`,
     [userId],
   )
@@ -238,7 +241,7 @@ export type LeaderboardRow = {
   topics: { slug: string; label: string } | null
 }
 
-/** P10 with P2 handles: tiers only, highest tier first, then by handle (not by exact score). */
+/** P10 with P2 handles: tiers only (PUBLIC_MIN_TIER and up), highest tier first, then by handle (not by exact score). */
 export const getTopicLeaderboard = (topicSlug: string, limit = 20) =>
   query<LeaderboardRow>(
     `select r.user_id, ${tierSql('r.score')} as tier,
@@ -247,7 +250,7 @@ export const getTopicLeaderboard = (topicSlug: string, limit = 20) =>
      from user_topic_reputation r
      join topics t on t.id = r.topic_id
      left join profiles pr on pr.id = r.user_id
-     where t.slug = $1
+     where t.slug = $1 and ${publicTierSql('r.score')}
      order by ${tierRankSql('r.score')} desc, pr.handle
      limit $2`,
     [topicSlug, limit],
@@ -255,7 +258,7 @@ export const getTopicLeaderboard = (topicSlug: string, limit = 20) =>
 
 export type PanelCandidateRow = LeaderboardRow & { topic_id: string; panelStatus: string | null }
 
-/** Admin page: users above the lowest tier in a topic, as tiers, and their panel status there. */
+/** Admin page: users eligible for a panel (PUBLIC_MIN_TIER and up, since membership is public), as tiers. */
 export const getPanelInviteCandidates = () =>
   query<PanelCandidateRow>(
     `select r.user_id, r.topic_id, ${tierSql('r.score')} as tier,
@@ -266,7 +269,7 @@ export const getPanelInviteCandidates = () =>
      left join profiles pr on pr.id = r.user_id
      left join topics t on t.id = r.topic_id
      left join panel_members pm on pm.user_id = r.user_id and pm.topic_id = r.topic_id
-     where ${tierRankSql('r.score')} > 0
+     where ${publicTierSql('r.score')}
      order by ${tierRankSql('r.score')} desc, t.label, pr.handle
      limit 100`,
   )

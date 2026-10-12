@@ -2,7 +2,7 @@
 
 import { useState } from 'react'
 import { Eyebrow, Badge, Btn } from '@civicsignal/ui'
-import { REPUTATION_TIERS, tierLabel } from '@/lib/reputation'
+import { PANEL_TIERS, tierLabel } from '@/lib/reputation'
 
 type Topic = {
   id: string
@@ -196,7 +196,7 @@ export const AdminPage = ({
   const [disputeLoading, setDisputeLoading] = useState<string | null>(null)
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({})
   const [candidateKey, setCandidateKey] = useState(panelCandidates.find((c) => !c.panelStatus)?.user_id + ':' + panelCandidates.find((c) => !c.panelStatus)?.topic_id || '')
-  const [inviteMinTier, setInviteMinTier] = useState('participant')
+  const [inviteMinTier, setInviteMinTier] = useState('contributor')
   const [invitingPanelist, setInvitingPanelist] = useState(false)
   const [proposalList, setProposalList] = useState<PollProposal[]>(pendingProposals)
   const [proposalNotes, setProposalNotes] = useState<Record<string, string>>({})
@@ -857,7 +857,7 @@ export const AdminPage = ({
                   <Field label="Minimum topic tier">
                     <SelectField
                       value={inviteMinTier}
-                      options={REPUTATION_TIERS.filter((t) => t.min > 0).map((t) => ({ value: t.key, label: `${t.label} (${t.min}+ correct)` }))}
+                      options={PANEL_TIERS.map((t) => ({ value: t.key, label: `${t.label} (${t.min}+ correct)` }))}
                       onChange={setInviteMinTier}
                     />
                   </Field>

@@ -185,16 +185,17 @@ const scenario = async () => {
   if (resolved?.data?.outcome !== 'Yes') throw new Error(`unexpected resolution result: ${JSON.stringify(resolved)}`)
 
   // Topic reputation comes from resolved votes over time; no route grants it, so set it here.
+  // Panels need the Contributor tier (score 5): panel membership is public, so its bar is a public tier.
   await db.query(
     `insert into user_topic_reputation (user_id, topic_id, score, resolved_count, correct_count)
-     values ($1, $3, 3, 3, 3), ($2, $3, 3, 3, 3)
+     values ($1, $3, 5, 5, 5), ($2, $3, 5, 5, 5)
      on conflict (user_id, topic_id) do update
        set score = excluded.score, resolved_count = excluded.resolved_count, correct_count = excluded.correct_count`,
     [userA.id, userB.id, topic.id],
   )
 
   for (const panelist of [userA, userB]) {
-    const invited = await admin.call('POST', '/api/admin/panels/invite', { topicId: topic.id, userId: panelist.id, minReputation: 1, activate: true })
+    const invited = await admin.call('POST', '/api/admin/panels/invite', { topicId: topic.id, userId: panelist.id, minTier: 'contributor', activate: true })
     if (invited?.member?.status !== 'active') throw new Error(`unexpected panel invite result for ${panelist.label}: ${JSON.stringify(invited)}`)
   }
 
