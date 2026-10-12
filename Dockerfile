@@ -35,12 +35,9 @@ COPY --from=deps /app/services            ./services
 # Copy source (overrides the empty dirs above with real source)
 COPY . .
 
-# Public Supabase values are baked into the Next.js client bundle at build time.
-ARG NEXT_PUBLIC_SUPABASE_URL
-ARG NEXT_PUBLIC_SUPABASE_ANON_KEY
-ARG NEXT_PUBLIC_SITE_URL
-ENV NEXT_PUBLIC_SUPABASE_URL=$NEXT_PUBLIC_SUPABASE_URL
-ENV NEXT_PUBLIC_SUPABASE_ANON_KEY=$NEXT_PUBLIC_SUPABASE_ANON_KEY
+# The public site URL is baked into the client bundle at build time. It is the
+# only build argument: secrets reach the server at runtime through env_file.
+ARG NEXT_PUBLIC_SITE_URL=https://civicsignal.montytorr.com
 ENV NEXT_PUBLIC_SITE_URL=$NEXT_PUBLIC_SITE_URL
 
 # Build only the web app; Turborepo resolves workspace dependencies
