@@ -80,10 +80,17 @@ export interface VoteRow {
   id: string
   poll_id: string
   user_id: string
+  /** The answer, encrypted to the poll's public key. There is no plaintext answer column. */
   encrypted_answer: string
-  answer: string | null
   receipt_hash: string
   created_at: string
+}
+
+/** Answer totals of a resolved poll (aggregates only). Public once the poll is resolved (P24). */
+export interface PollResultRow {
+  poll_id: string
+  answer: string
+  votes: number
 }
 
 export interface ReputationEventRow {
@@ -222,6 +229,7 @@ export interface Database {
       profiles: Table<ProfileRow, 'id' | 'handle'>
       polls: Table<PollRow, 'topic_id' | 'question' | 'region' | 'options' | 'source_of_truth' | 'cutoff_at' | 'resolves_at'>
       votes: Table<VoteRow, 'poll_id' | 'user_id' | 'encrypted_answer' | 'receipt_hash'>
+      poll_results: Table<PollResultRow, 'poll_id' | 'answer' | 'votes'>
       reputation_events: Table<ReputationEventRow, 'user_id' | 'poll_id' | 'topic_id'>
       user_topic_reputation: Table<UserTopicReputationRow, 'user_id' | 'topic_id'>
       audit_commitments: Table<AuditCommitmentRow, 'merkle_root' | 'batch_type'>
@@ -261,6 +269,7 @@ export type Topic = TopicRow
 export type Profile = ProfileRow
 export type Poll = PollRow
 export type Vote = VoteRow
+export type PollResult = PollResultRow
 export type ReputationEvent = ReputationEventRow
 export type UserTopicReputation = UserTopicReputationRow
 export type AuditCommitment = AuditCommitmentRow

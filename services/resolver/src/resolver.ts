@@ -1,5 +1,5 @@
 import { buildMerkleRoot, decryptVote } from '@civicsignal/crypto'
-import { getPool, insertRow, insertRows, query, queryOne, withTransaction, type Pool } from '@civicsignal/db'
+import { getPool, insertRow, query, queryOne, scoreResolvedPoll, withTransaction, type Pool } from '@civicsignal/db'
 
 // ─── Step 1: Auto-close polls past their cutoff ──────────────────────────────
 
@@ -61,99 +61,57 @@ export const generateCommitments = async (pool: Pool = getPool()) => {
   }
 }
 
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-/**
- * Returns the plain-text answer from a stored vote value.
- * If a secretKey is available, attempts decryption; falls back to treating the
- * value as plain text so pre-encryption votes still score correctly.
- */
-export const getPlainAnswer = (encryptedAnswer: string, secretKey: string | null): string => {
-  if (!secretKey) return encryptedAnswer
-  try {
-    return decryptVote(encryptedAnswer, secretKey)
-  } catch {
-    return encryptedAnswer // fallback for pre-encryption votes
-  }
-}
-
-// ─── Step 3: Process reputation for resolved polls ────────────────────────────
+// ─── Step 3: Score resolved polls ─────────────────────────────────────────────
 
 export const processResolutions = async (pool: Pool = getPool()) => {
-  // Resolved polls with an outcome and no reputation events yet
-  const unprocessedPolls = await query<{ id: string; topic_id: string; question: string; outcome: string }>(
-    `select p.id, p.topic_id, p.question, p.outcome from polls p
+  // Resolved polls with an outcome that have not been scored yet (no results, no reputation events).
+  // The admin resolution route scores in the same transaction as the outcome, so this mostly
+  // catches polls resolved by other means.
+  const unprocessedPolls = await query<{ id: string; question: string }>(
+    `select p.id, p.question from polls p
      where p.status = 'resolved'
        and p.outcome is not null
-       and not exists (select 1 from reputation_events e where e.poll_id = p.id)`,
+       and not exists (select 1 from reputation_events e where e.poll_id = p.id)
+       and not exists (select 1 from poll_results r where r.poll_id = p.id)`,
     [],
     pool,
   )
 
   if (unprocessedPolls.length === 0) return
 
-  console.log(`[resolver] Processing reputation for ${unprocessedPolls.length} resolved poll(s)`)
+  console.log(`[resolver] Scoring ${unprocessedPolls.length} resolved poll(s)`)
 
   for (const poll of unprocessedPolls) {
     try {
-      await processPoll(pool, poll)
+      await processPoll(pool, poll.id)
     } catch (err) {
-      console.error(`[resolver] Failed to process reputation for poll ${poll.id}:`, (err as Error).message)
+      console.error(`[resolver] Failed to score poll ${poll.id}:`, (err as Error).message)
     }
   }
 }
 
-const processPoll = async (pool: Pool, poll: { id: string; topic_id: string; outcome: string }) => {
-  const votes = await query<{ id: string; user_id: string; encrypted_answer: string }>(
-    'select id, user_id, encrypted_answer from votes where poll_id = $1',
-    [poll.id],
-    pool,
-  )
-
-  if (votes.length === 0) {
-    console.log(`[resolver] Poll ${poll.id} has no votes — skipping`)
-    return
-  }
-
-  // The poll's secret key, written to the server-only poll_secrets table at poll creation.
-  const secret = await queryOne<{ secret_key: string }>('select secret_key from poll_secrets where poll_id = $1', [poll.id], pool)
-  const secretKey = secret?.secret_key ?? null
-  if (secretKey) {
-    console.log(`[resolver] Poll ${poll.id} — using encryption key for decryption`)
-  } else {
-    console.log(`[resolver] Poll ${poll.id} — no secret key found, treating answers as plain text`)
-  }
-
-  console.log(`[resolver] Processing ${votes.length} vote(s) for poll ${poll.id} — outcome: "${poll.outcome}"`)
-
-  const reputationEvents = votes.map((vote) => {
-    const isCorrect = getPlainAnswer(vote.encrypted_answer, secretKey).trim() === poll.outcome.trim()
-    return { user_id: vote.user_id, poll_id: poll.id, topic_id: poll.topic_id, delta: isCorrect ? 1 : 0, isCorrect }
-  })
-
-  // Events and the per-topic totals land together or not at all.
+// Decrypt in memory with the key from the server-only poll_secrets table (S1) and score through the
+// shared scoreResolvedPoll, so this path and the admin resolution route count the same way. The
+// key and the answers are never logged or stored.
+const processPoll = async (pool: Pool, pollId: string) => {
   await withTransaction(async (client) => {
-    await insertRows(
-      'reputation_events',
-      reputationEvents.map(({ isCorrect: _isCorrect, ...event }) => event),
-      client,
-    )
-
-    for (const event of reputationEvents) {
-      await client.query(
-        `insert into user_topic_reputation (user_id, topic_id, score, resolved_count, correct_count)
-         values ($1, $2, $3, 1, $4)
-         on conflict (user_id, topic_id) do update set
-           score = coalesce(user_topic_reputation.score, 0) + excluded.score,
-           resolved_count = coalesce(user_topic_reputation.resolved_count, 0) + 1,
-           correct_count = coalesce(user_topic_reputation.correct_count, 0) + excluded.correct_count`,
-        [event.user_id, event.topic_id, event.delta, event.isCorrect ? 1 : 0],
-      )
+    const secret = await queryOne<{ secret_key: string }>('select secret_key from poll_secrets where poll_id = $1', [pollId], client)
+    const voteCount = await queryOne<{ n: string }>('select count(*) as n from votes where poll_id = $1', [pollId], client)
+    if (!secret && Number(voteCount?.n ?? 0) > 0) {
+      console.error(`[resolver] Poll ${pollId} has votes but no key in poll_secrets; cannot score it`)
+      return
+    }
+    const result = await scoreResolvedPoll(client, {
+      pollId,
+      decrypt: (encryptedAnswer) => {
+        if (!secret) throw new Error('no key')
+        return decryptVote(encryptedAnswer, secret.secret_key)
+      },
+    })
+    if (result.scored) {
+      console.log(`[resolver] Poll ${pollId} — ${result.correctVotes}/${result.countedVotes} correct of ${result.totalVotes} vote(s), results and reputation written`)
     }
   }, pool)
-
-  const correctCount = reputationEvents.filter((e) => e.isCorrect).length
-  console.log(`[resolver] Poll ${poll.id} — ${correctCount}/${votes.length} correct, reputation events written`)
 }
 
 /** One resolver pass: close, commit, score. Each step's failure is logged and does not stop the others. */

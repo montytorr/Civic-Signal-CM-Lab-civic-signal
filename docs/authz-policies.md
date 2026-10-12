@@ -25,7 +25,7 @@ for the new auth tables.
 - Admin is now `users.is_admin`. It used to be `profiles.is_admin` (old `006_admin_role.sql`);
   it moved off the public profile row.
 
-## Policy rules (P1–P23)
+## Policy rules (P1–P24)
 
 One rule per former `CREATE POLICY`, in migration order.
 
@@ -54,8 +54,9 @@ One rule per former `CREATE POLICY`, in migration order.
 | P21 | `poll_proposals` | SELECT | Anyone | All rows, including `moderator_notes`, `appeal_reason` and rejected proposals. | "Poll proposals are publicly readable" (009) / `using (true)` |
 | P22 | `poll_proposals` | INSERT | Signed-in user | The new row must have `proposed_by = U`. The policy did not check verification, despite its name. The route check R2 does. | "Verified users can create own poll proposals" (009) / `with check (auth.uid() = proposed_by)` |
 | P23 | `poll_proposals` | UPDATE | Signed-in user | Only rows with `proposed_by = U` and `status = 'pending'`. The updated row must still have `proposed_by = U` and `status = 'pending'`, so the proposer cannot change the owner or the status. Revision and appeal transitions are route-level workflow (R6), not this rule. | "Users can update own pending poll proposals" (009) / `using (auth.uid() = proposed_by and status = 'pending')` |
+| P24 | `poll_results` | SELECT | Anyone | Only rows whose poll has `status = 'resolved'`. Answer totals of open, closed, draft or disputed polls are not public. | New with sealed votes (no Supabase policy): resolution writes these aggregates instead of storing per-voter answers. |
 
-Total: **23 rules**. Old 002 had 14 policies, 008 had 5 and 009 had 4.
+Total: **24 rules**. Old 002 had 14 policies, 008 had 5 and 009 had 4; P24 is new.
 
 ## Poll secret keys (S1)
 
@@ -64,12 +65,21 @@ returns or logs its contents.** It holds each poll's NaCl `secret_key` (one row 
 cascade-deleted with the poll). `votes` rows carry `user_id`, so the key would de-anonymize
 every ballot. The product only ever reveals aggregates after cutoff.
 
-- **Writers:** admin poll creation only. That is `POST /api/admin/polls`, and `PATCH
+- **Writers:** admin poll creation. That is `POST /api/admin/polls`, and `PATCH
   /api/admin/proposals/[id]` when approving a proposal creates the poll. Both insert
-  `poll_secrets (poll_id, secret_key)` in the same transaction as the poll.
+  `poll_secrets (poll_id, secret_key)` in the same transaction as the poll. One more writer
+  provisions a keypair for a public poll that has none (the seeded launch polls, which a migration
+  cannot give NaCl keys): the vote route, on the poll's first vote, through
+  `ensurePollPublicKey` in `apps/web/app/lib/polls.ts`. It inserts the secret and publishes the
+  public key without reading or returning the secret.
 - **Readers:** the resolver (`services/resolver`) and the admin resolution route
   (`POST /api/admin/polls/[id]/resolve`). The resolution route decrypts ballots to tally them
   after passing R3. It uses the key in memory only and never returns it.
+- **Votes are sealed server-side and stored only sealed.** The vote route checks the answer is one
+  of the poll's options and encrypts it to the poll's public key (public material, so S1 holds);
+  `votes` has no plaintext column. Resolution decrypts in memory and writes only answer totals
+  (`poll_results`, P24) and each voter's correctness (`reputation_events`, P9). Both resolution
+  paths use the same function, `scoreResolvedPoll` in `packages/db`.
 - **`audit_commitments` stays public (P11) and holds only public material:** the public key,
   hashes and Merkle roots. The schema enforces this. The constraint
   `audit_commitments_no_secret_key` rejects any `metadata` that has a `secretKey` key.
@@ -83,7 +93,7 @@ must read the key from `poll_secrets`.
 Why: under Supabase, both routes wrote the secret key into `metadata`, and P11 made it readable
 by anyone. Anyone could decrypt every sealed vote of an open poll and link it to a user.
 
-## Default-deny rules (D1–D16)
+## Default-deny rules (D1–D17)
 
 With RLS enabled, any operation that no policy allowed was refused for `anon` and
 `authenticated`. These refusals are part of the old contract too. For a user-facing request,
@@ -108,6 +118,7 @@ check (R-rules), never directly on behalf of the caller.
 | D14 | `poll_proposals` | DELETE; UPDATE outside P23 (other users' proposals, non-pending proposals, status changes) except the route workflows R6 and R8 |
 | D15 | `schema_migrations` | everything (migrator only) |
 | D16 | `poll_secrets` | everything: SELECT, INSERT, UPDATE, DELETE. There is no read route. Admin poll creation writes it; the resolver and the resolution route read it server-side (S1). |
+| D17 | `poll_results` | INSERT, UPDATE, DELETE (resolution only: the admin resolution route and the resolver, through `scoreResolvedPoll`); SELECT of results of a poll that is not resolved (P24) |
 
 ## Auth tables (A1–A5)
 
@@ -120,7 +131,7 @@ schema, which clients could not read directly.
 | A2 | `users.password_hash`, `sessions.token_hash` and `email_tokens.token_hash` are never sent to a client or written to a log. The cookie carries the raw session token; the database stores only its hash. |
 | A3 | A signed-in user may read their own `email`, `email_verified_at` and `is_admin`, and nobody else's. Public identity is the profile (P2). |
 | A4 | Only server-internal code sets `users.is_admin`. There is no self-service path. On a fresh database, promote the first admin by hand: `update users set is_admin = true where email = '<email>';` (old 006 promoted the handle `cedar-thrush-04`, which does not exist on the fresh database). |
-| A5 | A session is valid only while `expires_at > now()`. An `email_tokens` row is usable once (`used_at is null`), before `expires_at`, and only for its `purpose` (`verify` or `reset`). A successful reset should end the user's other sessions. |
+| A5 | A session is valid only while `expires_at > now()`. An `email_tokens` row is usable once (`used_at is null`), before `expires_at`, and only for its `purpose` (`verify` or `reset`). A successful reset should end the user's other sessions. Before an email is verified its account is untrusted (anyone can sign up with any email): signing up again for an unverified email replaces the password and ends its sessions, and confirming the email needs the account's current password and ends every session before starting the verifier's. |
 
 ## Route checks that were never RLS (R1–R8)
 

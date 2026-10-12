@@ -80,26 +80,32 @@ describe.skipIf(!testDatabaseUrl)('resolver', () => {
     expect(commitments[0].merkle_root).toBe(buildMerkleRoot(['r1']))
   })
 
-  it('scores resolved polls once, decrypting with the poll key and accumulating reputation', async () => {
+  // A resolved poll with its keypair: public half in the public commitment, secret half in the
+  // server-only table.
+  const keyedPoll = async (outcome: string) => {
     const keypair = generatePollKeypair()
+    const poll = await newPoll({ cutoff_at: '2020-01-01T00:00:00.000Z', status: 'resolved', outcome })
+    await insertRow(
+      'audit_commitments',
+      { poll_id: poll.id, merkle_root: 'keypair', batch_type: 'vote', metadata: { type: 'keypair', publicKey: keypair.publicKey } },
+      pool,
+    )
+    await insertRow('poll_secrets', { poll_id: poll.id, secret_key: keypair.secretKey }, pool)
+    return { poll, publicKey: keypair.publicKey }
+  }
+
+  it('scores resolved polls once, decrypting with the poll key and accumulating reputation', async () => {
     const right = await newUser('right@example.com')
     const wrong = await newUser('wrong@example.com')
 
-    const first = await newPoll({ cutoff_at: '2020-01-01T00:00:00.000Z', status: 'resolved', outcome: 'Yes' })
-    // Public half in the public commitment, secret half in the server-only table.
-    await insertRow(
-      'audit_commitments',
-      { poll_id: first.id, merkle_root: 'keypair', batch_type: 'vote', metadata: { type: 'keypair', publicKey: keypair.publicKey } },
-      pool,
-    )
-    await insertRow('poll_secrets', { poll_id: first.id, secret_key: keypair.secretKey }, pool)
-    await insertRow('votes', { poll_id: first.id, user_id: right, encrypted_answer: encryptVote('Yes', keypair.publicKey), receipt_hash: 'a' }, pool)
-    await insertRow('votes', { poll_id: first.id, user_id: wrong, encrypted_answer: encryptVote('No', keypair.publicKey), receipt_hash: 'b' }, pool)
+    const { poll: first, publicKey: firstKey } = await keyedPoll('Yes')
+    await insertRow('votes', { poll_id: first.id, user_id: right, encrypted_answer: encryptVote('Yes', firstKey), receipt_hash: 'a' }, pool)
+    await insertRow('votes', { poll_id: first.id, user_id: wrong, encrypted_answer: encryptVote('No', firstKey), receipt_hash: 'b' }, pool)
 
-    // A second poll in the same topic with plain-text answers (no key) adds to the same rows.
-    const second = await newPoll({ cutoff_at: '2020-01-01T00:00:00.000Z', status: 'resolved', outcome: 'No' })
-    await insertRow('votes', { poll_id: second.id, user_id: right, encrypted_answer: 'Yes', receipt_hash: 'c' }, pool)
-    await insertRow('votes', { poll_id: second.id, user_id: wrong, encrypted_answer: ' No ', receipt_hash: 'd' }, pool)
+    // A second poll in the same topic adds to the same reputation rows.
+    const { poll: second, publicKey: secondKey } = await keyedPoll('No')
+    await insertRow('votes', { poll_id: second.id, user_id: right, encrypted_answer: encryptVote('Yes', secondKey), receipt_hash: 'c' }, pool)
+    await insertRow('votes', { poll_id: second.id, user_id: wrong, encrypted_answer: encryptVote('No', secondKey), receipt_hash: 'd' }, pool)
 
     await processResolutions(pool)
     await processResolutions(pool)
@@ -124,6 +130,30 @@ describe.skipIf(!testDatabaseUrl)('resolver', () => {
     const of = (userId: string) => reputation.find((r) => r.user_id === userId)
     expect(of(right)).toMatchObject({ score: 1, resolved_count: 2, correct_count: 1 })
     expect(of(wrong)).toMatchObject({ score: 1, resolved_count: 2, correct_count: 1 })
+
+    // Answer totals only, per poll; nothing per voter.
+    const results = await query<{ poll_id: string; answer: string; votes: number }>(
+      'select poll_id, answer, votes from poll_results where poll_id = any($1) order by poll_id, answer',
+      [[first.id, second.id]],
+      pool,
+    )
+    expect(results.filter((r) => r.poll_id === first.id).map(({ answer, votes }) => ({ answer, votes }))).toEqual([
+      { answer: 'No', votes: 1 },
+      { answer: 'Yes', votes: 1 },
+    ])
+    expect(results.filter((r) => r.poll_id === second.id)).toHaveLength(2)
+    const voteColumns = await query<{ column_name: string }>(`select column_name from information_schema.columns where table_name = 'votes'`, [], pool)
+    expect(voteColumns.map((c) => c.column_name)).not.toContain('answer')
+  })
+
+  it('counts a ballot that is not one of the options toward nothing', async () => {
+    const voter = await newUser('odd@example.com')
+    const { poll, publicKey } = await keyedPoll('Yes')
+    await insertRow('votes', { poll_id: poll.id, user_id: voter, encrypted_answer: encryptVote('Maybe', publicKey), receipt_hash: 'f' }, pool)
+    await processResolutions(pool)
+    const results = await query<{ answer: string; votes: number }>('select answer, votes from poll_results where poll_id = $1 order by answer', [poll.id], pool)
+    expect(results).toEqual([{ answer: 'No', votes: 0 }, { answer: 'Yes', votes: 0 }])
+    expect((await queryOne<{ n: string }>('select count(*) as n from reputation_events where poll_id = $1', [poll.id], pool))?.n).toBe('0')
   })
 
   it('reads the key only from poll_secrets; public metadata cannot hold one', async () => {
@@ -134,11 +164,12 @@ describe.skipIf(!testDatabaseUrl)('resolver', () => {
     await expect(
       insertRow('audit_commitments', { poll_id: poll.id, merkle_root: 'k', batch_type: 'vote', metadata: { secretKey: keypair.secretKey } }, pool),
     ).rejects.toThrow(/audit_commitments_no_secret_key/)
-    // Without a poll_secrets row the ciphertext is compared as plain text, so the vote scores 0.
+    // Without a poll_secrets row the ballots cannot be opened: the poll is left unscored.
     await insertRow('votes', { poll_id: poll.id, user_id: voter, encrypted_answer: encryptVote('Yes', keypair.publicKey), receipt_hash: 'e' }, pool)
+    vi.spyOn(console, 'error').mockImplementation(() => undefined)
     await processResolutions(pool)
-    const event = await queryOne<{ delta: number }>('select delta from reputation_events where poll_id = $1', [poll.id], pool)
-    expect(event?.delta).toBe(0)
+    expect(await queryOne('select 1 from reputation_events where poll_id = $1', [poll.id], pool)).toBeNull()
+    expect(await queryOne('select 1 from poll_results where poll_id = $1', [poll.id], pool)).toBeNull()
   })
 
   it('skips resolved polls with no votes and runs a full tick without throwing', async () => {

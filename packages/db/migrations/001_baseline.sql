@@ -106,16 +106,25 @@ create table if not exists public.polls (
   created_at timestamptz default now()
 );
 
--- One vote per user per poll.
+-- One vote per user per poll. The answer is stored only sealed (encrypted to the poll's public
+-- key); there is no plaintext column. Resolution decrypts in memory with poll_secrets and keeps
+-- only aggregates (poll_results) and per-voter correctness (reputation_events).
 create table if not exists public.votes (
   id uuid primary key default gen_random_uuid(),
   poll_id uuid references public.polls(id) not null,
   user_id uuid references public.profiles(id) not null,
   encrypted_answer text not null,
-  answer text,
   receipt_hash text not null,
   created_at timestamptz default now(),
   unique(poll_id, user_id)
+);
+
+-- Answer totals of a resolved poll, written at resolution. Aggregates only: no user ids.
+create table if not exists public.poll_results (
+  poll_id uuid not null references public.polls(id) on delete cascade,
+  answer text not null,
+  votes integer not null check (votes >= 0),
+  primary key (poll_id, answer)
 );
 
 -- ─── Reputation ──────────────────────────────────────────────────────────────

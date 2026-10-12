@@ -165,6 +165,28 @@ describe.skipIf(!testDatabaseUrl)('migrator on an empty Postgres', () => {
     await expect(insertRow('poll_secrets', { poll_id: poll!.id, secret_key: 's2' }, pool)).rejects.toThrow(/duplicate key/)
   })
 
+  it('stores votes sealed only: no plaintext answer column', async () => {
+    const columns = await query<{ column_name: string }>(
+      `select column_name from information_schema.columns where table_schema = 'public' and table_name = 'votes' order by ordinal_position`,
+      [],
+      pool,
+    )
+    expect(columns.map((c) => c.column_name)).toEqual(['id', 'poll_id', 'user_id', 'encrypted_answer', 'receipt_hash', 'created_at'])
+  })
+
+  it('keeps resolved answer totals in poll_results, without user ids', async () => {
+    const columns = await query<{ column_name: string }>(
+      `select column_name from information_schema.columns where table_schema = 'public' and table_name = 'poll_results' order by ordinal_position`,
+      [],
+      pool,
+    )
+    expect(columns.map((c) => c.column_name)).toEqual(['poll_id', 'answer', 'votes'])
+    const poll = await queryOne<{ id: string }>('select id from polls limit 1', [], pool)
+    await insertRow('poll_results', { poll_id: poll!.id, answer: 'Yes', votes: 2 }, pool)
+    await expect(insertRow('poll_results', { poll_id: poll!.id, answer: 'Yes', votes: 3 }, pool)).rejects.toThrow(/duplicate key/)
+    await expect(insertRow('poll_results', { poll_id: poll!.id, answer: 'No', votes: -1 }, pool)).rejects.toThrow(/check constraint/)
+  })
+
   it('keeps emails unique and lowercase', async () => {
     await insertRow('users', { email: 'bob@example.com', password_hash: 'x' }, pool)
     await expect(insertRow('users', { email: 'bob@example.com', password_hash: 'y' }, pool)).rejects.toThrow(/unique/)

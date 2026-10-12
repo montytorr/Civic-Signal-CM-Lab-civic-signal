@@ -96,7 +96,7 @@ Initial topic slugs:
 - `status` enum: `valid`, `invalidated`
 - unique(`poll_id`, `user_id`)
 
-Note: MVP can store `option_id` directly server-side while exposing only sealed receipt/hash to the user before cutoff. If stronger secrecy is needed later, move to commit/reveal or encrypted ballots.
+As built: ballots are encrypted, and no plaintext choice is stored. The `votes` table in `packages/db/migrations/001_baseline.sql` has `encrypted_answer` (the answer sealed server-side to the poll's NaCl public key, which is published in `audit_commitments`) and `receipt_hash`, with no `option_id` or plaintext answer column. The poll's secret key lives only in the server-only `poll_secrets` table. At resolution the ballots are decrypted in memory, and only two things are written: answer totals to `poll_results (poll_id, answer, votes)`, which are public once the poll is resolved, and each voter's correctness to `reputation_events`. Before resolution a voter sees "sealed"; after it, "matched" or "not matched". See `docs/authz-policies.md` (S1, P24, D17).
 
 ### vote_receipts
 
