@@ -19,20 +19,6 @@ jobs:
       - name: Check out deployment revision
         uses: actions/checkout@v4
 
-      - name: Notify Discord commit pushed
-        if: github.event_name == 'push'
-        run: |
-          SHORT_SHA="${GITHUB_SHA::7}"
-          COMMIT_SUBJECT=$(jq -r '.head_commit.message // "unknown" | split("\n")[0]' "$GITHUB_EVENT_PATH")
-          AUTHOR=$(jq -r '.head_commit.author.name // .pusher.name // "unknown"' "$GITHUB_EVENT_PATH")
-          BODY=$(jq -n \
-            --arg content "📝 **CivicSignal commit pushed** — \`${SHORT_SHA} ${COMMIT_SUBJECT}\` by ${AUTHOR}\n<https://github.com/${{ github.repository }}/commit/${{ github.sha }}>" \
-            '{content:$content}')
-          curl -sf -X POST "$DISCORD_WEBHOOK_URL" \
-            -H "Content-Type: application/json" \
-            -H "User-Agent: CivicSignal-CI/1.0" \
-            -d "$BODY" || true
-
       - name: Deploy latest main on internal runner
         id: deploy
         run: |
