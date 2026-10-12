@@ -5,10 +5,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import {
   MAX_ENTRIES,
   MAX_KEY_LENGTH,
-  isRateLimited,
   rateLimit,
   rateLimitSize,
-  recordAttempt,
+  refundAttempt,
+  reserveAttempts,
   resetRateLimits,
 } from '@/lib/rate-limit'
 
@@ -45,12 +45,36 @@ describe('rate limiter bounds', () => {
     expect(rateLimitSize()).toBe(1)
   })
 
-  it('failure-only limits: checking does not count, recording does', () => {
-    expect(isRateLimited('fail', 2)).toBe(false)
-    expect(isRateLimited('fail', 2)).toBe(false)
-    recordAttempt('fail', 60_000)
-    expect(isRateLimited('fail', 2)).toBe(false)
-    recordAttempt('fail', 60_000)
-    expect(isRateLimited('fail', 2)).toBe(true)
+  it('failure-only limits: a reserved slot is refunded on success, kept on failure', () => {
+    const release = reserveAttempts([['fail', 2, 60_000]])
+    release() // success: not counted
+    reserveAttempts([['fail', 2, 60_000]]) // failure: kept
+    reserveAttempts([['fail', 2, 60_000]]) // failure: kept
+    expect(() => reserveAttempts([['fail', 2, 60_000]])).toThrow(/Too many/)
+  })
+
+  it('reserving is atomic: N callers before any result cannot exceed the cap', () => {
+    // Reservations happen synchronously before the slow check, so 15 concurrent attempts against a
+    // cap of 10 get exactly 10 slots.
+    let granted = 0
+    for (let i = 0; i < 15; i++) {
+      try {
+        reserveAttempts([['burst', 10, 60_000]])
+        granted++
+      } catch {
+        // refused
+      }
+    }
+    expect(granted).toBe(10)
+  })
+
+  it('reserving several keys is all or nothing', () => {
+    for (let i = 0; i < 3; i++) reserveAttempts([['b', 3, 60_000]])
+    expect(() => reserveAttempts([['a', 5, 60_000], ['b', 3, 60_000]])).toThrow()
+    // 'a' was refunded when 'b' refused, so it still has all 5.
+    for (let i = 0; i < 5; i++) reserveAttempts([['a', 5, 60_000]])
+    expect(() => reserveAttempts([['a', 5, 60_000]])).toThrow()
+    refundAttempt('a')
+    expect(() => reserveAttempts([['a', 5, 60_000]])).not.toThrow()
   })
 })

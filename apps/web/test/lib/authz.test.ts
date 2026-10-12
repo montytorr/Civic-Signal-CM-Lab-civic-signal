@@ -8,7 +8,9 @@ import {
   assertCanReviewDispute,
   assertNoSecretKey,
   assertProposer,
+  canReadExactReputation,
   canReadInvite,
+  canReadReputationEvents,
   canReadVote,
   canUpdateOwnProposal,
   canReadPollResults,
@@ -22,6 +24,7 @@ import {
   requireVerified,
   type Viewer,
 } from '@/lib/authz'
+import { REPUTATION_TIERS, tierLabel, tierOf, tierRank, tierRankSql, tierSql } from '@/lib/reputation'
 
 const alice: Viewer = { id: 'alice', isAdmin: false, verified: true }
 const bob: Viewer = { id: 'bob', isAdmin: false, verified: true }
@@ -40,8 +43,6 @@ const httpError = (fn: () => unknown) => {
 describe('public reads', () => {
   it('P1: anyone can read topics', () => expect(isPublicTable('topics')).toBe(true))
   it('P2: anyone can read profiles', () => expect(isPublicTable('profiles')).toBe(true))
-  it('P9: anyone can read reputation events', () => expect(isPublicTable('reputation_events')).toBe(true))
-  it('P10: anyone can read topic reputation', () => expect(isPublicTable('user_topic_reputation')).toBe(true))
   it('P11: anyone can read audit commitments', () => expect(isPublicTable('audit_commitments')).toBe(true))
   it('P12: anyone can read disputes', () => expect(isPublicTable('disputes')).toBe(true))
   it('P15: anyone can read panel memberships', () => expect(isPublicTable('panel_members')).toBe(true))
@@ -51,9 +52,42 @@ describe('public reads', () => {
   it('P21: anyone can read poll proposals', () => expect(isPublicTable('poll_proposals')).toBe(true))
 
   it('only those tables are public: votes, invites, polls, secrets and auth tables are not', () => {
-    for (const table of ['votes', 'invites', 'polls', 'poll_secrets', 'users', 'sessions', 'email_tokens', 'schema_migrations']) {
+    for (const table of ['votes', 'invites', 'polls', 'poll_secrets', 'users', 'sessions', 'email_tokens', 'schema_migrations', 'reputation_events', 'user_topic_reputation', 'poll_results']) {
       expect(isPublicTable(table), table).toBe(false)
     }
+  })
+})
+
+describe('reputation', () => {
+  it('P9: only the owner reads their per-poll reputation events', () => {
+    expect(canReadReputationEvents(alice, 'alice')).toBe(true)
+    expect(canReadReputationEvents(bob, 'alice')).toBe(false)
+    expect(canReadReputationEvents(admin, 'alice')).toBe(false)
+    expect(canReadReputationEvents(null, 'alice')).toBe(false)
+  })
+
+  it('P10: only the owner reads an exact score; everyone else a tier', () => {
+    expect(canReadExactReputation(alice, 'alice')).toBe(true)
+    expect(canReadExactReputation(bob, 'alice')).toBe(false)
+    expect(canReadExactReputation(admin, 'alice')).toBe(false)
+    expect(canReadExactReputation(null, 'alice')).toBe(false)
+  })
+
+  it('P10: tiers are coarse, ordered and defined in one place', () => {
+    expect(REPUTATION_TIERS.map((t) => [t.key, t.min])).toEqual([
+      ['newcomer', 0], ['participant', 1], ['contributor', 5], ['trusted', 20], ['steward', 50],
+    ])
+    expect([0, 1, 4, 5, 19, 20, 49, 50, 500].map(tierOf)).toEqual([
+      'newcomer', 'participant', 'participant', 'contributor', 'contributor', 'trusted', 'trusted', 'steward', 'steward',
+    ])
+    expect(tierOf(null)).toBe('newcomer')
+    expect(tierLabel('trusted')).toBe('Trusted')
+    expect(tierRank('steward')).toBeGreaterThan(tierRank('trusted'))
+    // The SQL forms name tiers and ranks, never the score itself as output.
+    expect(tierSql('r.score')).toBe(
+      "case when coalesce(r.score, 0) >= 50 then 'steward' when coalesce(r.score, 0) >= 20 then 'trusted' when coalesce(r.score, 0) >= 5 then 'contributor' when coalesce(r.score, 0) >= 1 then 'participant' when coalesce(r.score, 0) >= 0 then 'newcomer' end",
+    )
+    expect(tierRankSql('r.score')).toMatch(/^case when coalesce\(r\.score, 0\) >= 50 then 4 .* then 0 end$/)
   })
 })
 

@@ -8,6 +8,7 @@ import {
   getAuditCommitments,
   getLaunchSignalReport,
   getPanelTransparency,
+  getPanelInviteCandidates,
   getPendingVotes,
   getPollById,
   getRecentContributions,
@@ -20,6 +21,9 @@ import {
   getVoteDistribution,
 } from '@/lib/queries'
 import type { Viewer } from '@/lib/authz'
+import { createElement } from 'react'
+import { renderToStaticMarkup } from 'react-dom/server'
+import { ReputationPage } from '@/components/reputation-page'
 import * as signup from '@/api/auth/signup/route'
 import * as pollsList from '@/api/polls/route'
 import * as pollGet from '@/api/polls/[id]/route'
@@ -261,16 +265,62 @@ describe.skipIf(!hasDatabase)('authorization rules against Postgres', () => {
 
   // ─── Reputation and audit ──────────────────────────────────────────────────────────────────────
 
-  it('P9: anonymous can read reputation events', async () => {
-    const events = await getRecentContributions(alice.id)
-    expect(events.some((e) => e.delta === 1 && e.polls !== null)).toBe(true)
+  it('P9: only the owner reads their reputation events; anonymous and other users get none', async () => {
+    const own = await getRecentContributions(alice.id, viewerOf(alice))
+    expect(own.some((e) => e.delta === 1 && e.polls !== null)).toBe(true)
+    expect(await getRecentContributions(alice.id, null)).toEqual([])
+    expect(await getRecentContributions(alice.id, viewerOf(bob))).toEqual([])
+    expect(await getRecentContributions(alice.id, { id: admin.id, isAdmin: true, verified: true })).toEqual([])
   })
 
-  it('P10: anonymous can read topic reputation', async () => {
-    expect((await getUserReputation(alice.id))[0]).toMatchObject({ score: 1, resolved_count: 1, correct_count: 1 })
-    expect((await getUserReputation(bob.id))[0]).toMatchObject({ score: 0, resolved_count: 1, correct_count: 0 })
+  it('P10: the owner reads the exact score; anonymous and other users see only the tier', async () => {
+    expect((await getUserReputation(alice.id, viewerOf(alice)))[0]).toMatchObject({ score: 1, resolved_count: 1, correct_count: 1, tier: 'participant' })
+    expect((await getUserReputation(bob.id, viewerOf(bob)))[0]).toMatchObject({ score: 0, resolved_count: 1, correct_count: 0, tier: 'newcomer' })
+    for (const viewer of [null, viewerOf(bob)]) {
+      const rows = await getUserReputation(alice.id, viewer)
+      expect(rows).toHaveLength(1)
+      expect(Object.keys(rows[0]).sort()).toEqual(['tier', 'topic_id', 'topics'])
+      expect(rows[0].tier).toBe('participant')
+    }
+    // Bob's wrong answer is invisible to others: same row shape, lowest tier, no counts.
+    expect(Object.keys((await getUserReputation(bob.id, viewerOf(alice)))[0]).sort()).toEqual(['tier', 'topic_id', 'topics'])
+  })
+
+  it('P10: leaderboards and panel candidates list tiers, ordered by tier then handle, never scores', async () => {
     const slug = (await queryOne<{ slug: string }>('select slug from topics where id = $1', [topic]))!.slug
-    expect((await getTopicLeaderboard(slug)).map((r) => r.user_id)).toContain(alice.id)
+    const board = await getTopicLeaderboard(slug)
+    expect(board.map((r) => r.user_id)).toEqual(expect.arrayContaining([alice.id, bob.id, carol.id]))
+    for (const row of board) expect(Object.keys(row).sort()).toEqual(['profiles', 'tier', 'topics', 'user_id'])
+    const ranks = board.map((r) => ['newcomer', 'participant', 'contributor', 'trusted', 'steward'].indexOf(r.tier))
+    expect(ranks).toEqual([...ranks].sort((a, b) => b - a))
+    const candidates = await getPanelInviteCandidates()
+    for (const row of candidates) expect(Object.keys(row)).not.toEqual(expect.arrayContaining(['score']))
+    expect(candidates.map((c) => c.user_id)).not.toContain(bob.id)
+  })
+
+  it('P10: the rendered profile shows the exact score to its owner only', async () => {
+    const profile = (await getUserProfile(alice.handle))!
+    const render = async (viewer: Viewer | null) =>
+      renderToStaticMarkup(
+        createElement(ReputationPage, {
+          profile,
+          reputation: await getUserReputation(alice.id, viewer),
+          contributions: await getRecentContributions(alice.id, viewer),
+          pendingVotes: await getPendingVotes(alice.id, viewer),
+          isOwner: viewer?.id === alice.id,
+        }),
+      )
+    const own = await render(viewerOf(alice))
+    expect(own).toContain('POINTS')
+    expect(own).toContain('Recent resolved contributions')
+    expect(own).toContain('Participant')
+    for (const html of [await render(null), await render(viewerOf(bob))]) {
+      expect(html).toContain('Participant')
+      expect(html).not.toContain('POINTS')
+      expect(html).not.toContain('accuracy')
+      expect(html).not.toContain('Recent resolved contributions')
+      expect(html).not.toContain('Your vote')
+    }
   })
 
   it('P11: anonymous can read audit commitments, which hold the public key only', async () => {
@@ -576,6 +626,8 @@ describe.skipIf(!hasDatabase)('authorization rules against Postgres', () => {
     // (Alice's id is public on her proposals and disputes; what must never appear is an answer.)
     for (const res of asBob) expect(res.text).not.toMatch(/"answer"\s*:/)
     expect(seenBodies.join('\n')).not.toMatch(/"answer":"(Yes|No)"/)
+    // No response carries an exact reputation score or a per-poll delta either (P9, P10).
+    expect(seenBodies.join('\n')).not.toMatch(/"(score|delta|correct_count|resolved_count)"\s*:/)
   })
 
   it('P20: anonymous can read source templates', async () => {

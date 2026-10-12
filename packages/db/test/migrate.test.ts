@@ -165,6 +165,30 @@ describe.skipIf(!testDatabaseUrl)('migrator on an empty Postgres', () => {
     await expect(insertRow('poll_secrets', { poll_id: poll!.id, secret_key: 's2' }, pool)).rejects.toThrow(/duplicate key/)
   })
 
+  it('allows one published public key per poll', async () => {
+    const poll = await queryOne<{ id: string }>(
+      `select p.id from polls p where not exists (select 1 from audit_commitments a where a.poll_id = p.id) limit 1`,
+      [],
+      pool,
+    )
+    await insertRow('audit_commitments', { poll_id: poll!.id, merkle_root: 'k1', batch_type: 'vote', metadata: { type: 'keypair', publicKey: 'p1' } }, pool)
+    await expect(
+      insertRow('audit_commitments', { poll_id: poll!.id, merkle_root: 'k2', batch_type: 'vote', metadata: { type: 'keypair', publicKey: 'p2' } }, pool),
+    ).rejects.toThrow(/audit_commitments_one_public_key/)
+    // Commitments without a public key (Merkle roots, resolutions) are not limited.
+    await insertRow('audit_commitments', { poll_id: poll!.id, merkle_root: 'm1', batch_type: 'vote', metadata: { vote_count: 0 } }, pool)
+    await insertRow('audit_commitments', { poll_id: poll!.id, merkle_root: 'm2', batch_type: 'resolution', metadata: null }, pool)
+  })
+
+  it('counts wrong passwords on an email token', async () => {
+    const column = await queryOne<{ column_default: string; is_nullable: string }>(
+      `select column_default, is_nullable from information_schema.columns where table_name = 'email_tokens' and column_name = 'failed_attempts'`,
+      [],
+      pool,
+    )
+    expect(column).toEqual({ column_default: '0', is_nullable: 'NO' })
+  })
+
   it('stores votes sealed only: no plaintext answer column', async () => {
     const columns = await query<{ column_name: string }>(
       `select column_name from information_schema.columns where table_schema = 'public' and table_name = 'votes' order by ordinal_position`,

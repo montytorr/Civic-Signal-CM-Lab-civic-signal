@@ -182,6 +182,63 @@ describe('poll secrets', () => {
   })
 })
 
+describe('vote privacy: reputation is tiered for everyone but its owner', () => {
+  // Every SQL string literal in the app that reads reputation_events or user_topic_reputation.
+  const reputationSql = [...SOURCES].flatMap(([file, text]) =>
+    [...text.matchAll(/`[^`]*`|'[^'\n]*'/g)]
+      .filter((m) => /\b(reputation_events|user_topic_reputation)\b/.test(m[0]))
+      .map((m) => {
+        const before = text.slice(0, m.index)
+        const owner = [...before.matchAll(/(?:export )?const (\w+) =/g)].at(-1)?.[1] ?? '(top level)'
+        // What the statement exposes once tier expressions are taken out.
+        const exposed = m[0].replace(/\$\{tier(Rank)?Sql\('[^']*'\)\}/g, 'TIER')
+        return { file, owner, sql: m[0], exposed }
+      }),
+  )
+  const RAW = /\b(score|delta|resolved_count|correct_count)\b/
+
+  // Owner-only readers (they take the viewer and filter on viewer.id) and server-internal checks
+  // that compare a score without returning it.
+  const ALLOWED = new Set([
+    'app/lib/queries.ts#getOwnReputation',
+    'app/lib/queries.ts#getOwnContributions',
+    'app/lib/queries.ts#matchedSql',
+    'app/api/polls/[id]/dispute/route.ts#reputation', // the disputer's own score > 0, not returned
+    'app/api/admin/panels/invite/route.ts#rep', // compared with a tier minimum, not returned
+  ])
+
+  it('P9: no public query reads reputation events', () => {
+    const offenders = reputationSql
+      .filter((q) => /\breputation_events\b/.test(q.sql) && !ALLOWED.has(`${q.file}#${q.owner}`))
+      .map((q) => `${q.file}#${q.owner}`)
+    expect(offenders).toEqual([])
+  })
+
+  it('P10: no public query selects an exact score or count; only tierSql/tierRankSql', () => {
+    const offenders = reputationSql
+      .filter((q) => RAW.test(q.exposed) && !ALLOWED.has(`${q.file}#${q.owner}`))
+      .map((q) => `${q.file}#${q.owner}: ${q.exposed.replace(/\s+/g, ' ').slice(0, 120)}`)
+    expect(offenders).toEqual([])
+    expect(reputationSql.length).toBeGreaterThan(5)
+  })
+
+  it('P10: the owner-only readers are keyed on the viewer, and the public ones gate on the owner check', () => {
+    const queries = SOURCES.get('app/lib/queries.ts') ?? ''
+    expect(queries).toMatch(/export const getOwnReputation = \(viewer: Viewer\)[\s\S]*?\[viewer\.id\]/)
+    expect(queries).toMatch(/export const getOwnContributions = \(viewer: Viewer\)[\s\S]*?\[viewer\.id\]/)
+    expect(queries).toMatch(/canReadExactReputation\(viewer, userId\) \? getOwnReputation\(viewer\)/)
+    expect(queries).toMatch(/canReadReputationEvents\(viewer, userId\) \? getOwnContributions\(viewer\)/)
+    const callers = [...SOURCES].filter(([, text]) => /getOwn(Reputation|Contributions)\(/.test(text)).map(([file]) => file)
+    expect(callers).toEqual(['app/lib/queries.ts'])
+  })
+
+  it('P10: public components show tiers, not scores', () => {
+    for (const file of ['app/components/leaderboard-page.tsx', 'app/components/admin-page.tsx']) {
+      expect(SOURCES.get(file), file).not.toMatch(/\.(score|correct_count|resolved_count)\b/)
+    }
+  })
+})
+
 describe('auth tables', () => {
   const AUTH_LIB = /^app\/lib\/auth\//
 

@@ -247,6 +247,24 @@ describe.skipIf(!hasDatabase)('auth against Postgres', () => {
       for (let i = 0; i < 12; i++) expect((await logIn(user.email, user.password, ip)).status).toBe(200)
     })
 
+    it('login: concurrent wrong passwords cannot overshoot the per email+IP cap', async () => {
+      const user = await createUser()
+      const ip = freshIp()
+      const statuses = await Promise.all(Array.from({ length: 15 }, (_, i) => logIn(user.email, `wrong ${i}`, ip).then((r) => r.status)))
+      expect(statuses.filter((s) => s === 401)).toHaveLength(10)
+      expect(statuses.filter((s) => s === 429)).toHaveLength(5)
+    })
+
+    it('login: locking an account out takes 100 failures from at least 10 IPs (the documented residual)', async () => {
+      const user = await createUser()
+      for (let ip = 0; ip < 10; ip++) {
+        const attackerIp = freshIp()
+        for (let i = 0; i < 10; i++) expect((await logIn(user.email, `wrong ${i}`, attackerIp)).status).toBe(401)
+      }
+      // 100 failures: now the email is capped everywhere for the window.
+      expect((await logIn(user.email, user.password)).status).toBe(429)
+    }, 120_000)
+
     it('login: 30 attempts per IP across accounts', async () => {
       const ip = freshIp()
       const statuses: number[] = []
@@ -255,12 +273,65 @@ describe.skipIf(!hasDatabase)('auth against Postgres', () => {
       expect(statuses[30]).toBe(429)
     })
 
-    it('signup: 5 per email, from any IP', async () => {
-      const email = `limited.${Date.now()}@example.com`
+    it('signup and resend: an attacker using up a victim’s budget from one IP does not block the victim', async () => {
+      const email = `victim.${Date.now()}@example.com`
+      const attackerIp = freshIp()
       const statuses: number[] = []
-      for (let i = 0; i < 6; i++) statuses.push((await signUp(email, 'a strong password')).status)
+      for (let i = 0; i < 6; i++) statuses.push((await signUp(email, `attacker password ${i}`, attackerIp)).status)
       expect(statuses.slice(0, 5).every((s) => s === 200)).toBe(true)
       expect(statuses[5]).toBe(429)
+      const resends: number[] = []
+      for (let i = 0; i < 6; i++) resends.push((await call(resend.POST, { method: 'POST', ip: attackerIp, body: { email } })).status)
+      expect(resends.at(-1)).toBe(429)
+
+      // The victim, from their own IP, can still sign up (taking the account back) and resend.
+      const victimIp = freshIp()
+      expect((await signUp(email, 'owner password', victimIp)).status).toBe(200)
+      expect((await call(resend.POST, { method: 'POST', ip: victimIp, body: { email } })).status).toBe(200)
+      expect((await confirm(lastToken('/auth/verify'), 'owner password', victimIp)).status).toBe(200)
+    })
+
+    it('signup: at most 20 per email per hour across IPs', async () => {
+      const email = `hourly.${Date.now()}@example.com`
+      for (let ip = 0; ip < 4; ip++) {
+        const from = freshIp()
+        for (let i = 0; i < 5; i++) expect((await signUp(email, 'a strong password', from)).status).toBe(200)
+      }
+      expect((await signUp(email, 'a strong password')).status).toBe(429)
+    }, 120_000)
+
+    it('verify: wrong passwords spend the link after 5 and count toward the login failure limits', async () => {
+      const email = `guess.${Date.now()}@example.com`
+      await signUp(email, 'the real password')
+      const token = lastToken('/auth/verify')
+      const ip = freshIp()
+      const codes: string[] = []
+      for (let i = 0; i < 5; i++) codes.push((await confirm(token, `guess ${i}`, ip)).body.code)
+      expect(codes).toEqual(['WRONG_PASSWORD', 'WRONG_PASSWORD', 'WRONG_PASSWORD', 'WRONG_PASSWORD', 'TOKEN_SPENT'])
+      // Spent: even the right password does nothing now.
+      expect((await confirm(token, 'the real password', ip)).body.code).toBe('INVALID_TOKEN')
+      expect((await queryOne<{ v: string | null }>('select email_verified_at as v from users where email = $1', [email]))?.v).toBeNull()
+
+      // The 5 wrong verify passwords used half of this email+IP's 10 failures.
+      for (let i = 0; i < 5; i++) expect((await logIn(email, `login guess ${i}`, ip)).status).toBe(401)
+      expect((await logIn(email, 'the real password', ip)).status).toBe(429)
+    })
+
+    it('verify: concurrent wrong passwords are counted one by one on the token', async () => {
+      const email = `race.${Date.now()}@example.com`
+      await signUp(email, 'the real password')
+      const token = lastToken('/auth/verify')
+      const results = await Promise.all(Array.from({ length: 8 }, (_, i) => confirm(token, `guess ${i}`, freshIp())))
+      const codes = results.map((r) => r.body.code)
+      expect(codes.filter((c) => c === 'TOKEN_SPENT')).toHaveLength(1)
+      expect(codes.filter((c) => c === 'WRONG_PASSWORD')).toHaveLength(4)
+      expect(codes.filter((c) => c === 'INVALID_TOKEN')).toHaveLength(3)
+      const row = await queryOne<{ failed_attempts: number; used_at: string | null }>(
+        'select failed_attempts, used_at from email_tokens where token_hash = $1',
+        [hashToken(token)],
+      )
+      expect(row?.failed_attempts).toBe(5)
+      expect(row?.used_at).not.toBeNull()
     })
   })
 
