@@ -52,3 +52,9 @@ Thumbs.db
 *.swp
 *.swo
 apps/web/supabase/.temp/
+
+# Turborepo cache
+.turbo/
+
+# TypeScript incremental build info (rewritten by every typecheck)
+*.tsbuildinfo
