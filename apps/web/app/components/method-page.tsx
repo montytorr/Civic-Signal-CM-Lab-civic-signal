@@ -66,12 +66,12 @@ const SECTIONS = [
     id: 'rep',
     n: '06',
     h: 'Reputation',
-    d: "Reputation is topic-specific and earned by being on the correct side of a resolved poll. It can’t be transferred, sold, staked, or boosted by paying. There is no single global score.",
+    d: "Reputation is topic-specific and earned by being on the correct side of a resolved poll. It can’t be transferred, sold, staked, or boosted by paying. There is no single global score. Others see only your tier in each topic (Newcomer, Participant, Contributor, Trusted, Steward); your exact score and which polls you got right are visible to you alone, so no one can work out how you voted from your reputation.",
     bullets: [
       'Per-topic only',
+      'Public as a tier, exact only to you',
       'Non-transferable',
       'No financial value',
-      'Decays slowly to reward sustained accuracy',
     ],
   },
   {

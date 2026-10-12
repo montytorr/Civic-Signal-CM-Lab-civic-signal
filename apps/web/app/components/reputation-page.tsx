@@ -1,5 +1,6 @@
 import Link from 'next/link'
 import { Eyebrow, VerifiedBadge, Badge } from '@civicsignal/ui'
+import { tierLabel } from '@/lib/reputation'
 
 type Profile = {
   id: string
@@ -9,12 +10,13 @@ type Profile = {
   created_at: string
 }
 
+// Everyone sees the tier; only the owner gets the exact score and counts (P10).
 type ReputationRow = {
-  user_id: string
   topic_id: string
-  score: number
-  resolved_count: number
-  correct_count: number
+  tier: string
+  score?: number
+  resolved_count?: number
+  correct_count?: number
   topics?: { slug: string; label: string } | null
 }
 
@@ -40,11 +42,6 @@ type PendingVoteRow = {
   } | null
 }
 
-const getRank = (score: number) => {
-  if (score >= 1500) return 'Steward'
-  if (score >= 500) return 'Contributor'
-  return 'Observer'
-}
 
 const getJoinedLabel = (createdAt: string) => {
   const d = new Date(createdAt)
@@ -63,16 +60,26 @@ export const ReputationPage = ({
   reputation,
   contributions,
   pendingVotes,
+  isOwner,
 }: {
   profile: Profile
   reputation: ReputationRow[]
   contributions: ContributionRow[]
   pendingVotes: PendingVoteRow[]
+  /** The signed-in user is this profile's owner: show exact scores and per-poll results. */
+  isOwner: boolean
 }) => {
   const totalResolved = reputation.reduce((sum, r) => sum + (r.resolved_count ?? 0), 0)
   const totalCorrect = reputation.reduce((sum, r) => sum + (r.correct_count ?? 0), 0)
   const accuracy = totalResolved > 0 ? totalCorrect / totalResolved : 0
-  const maxScore = reputation.length > 0 ? Math.max(...reputation.map((r) => r.score)) : 1
+  const maxScore = reputation.length > 0 ? Math.max(1, ...reputation.map((r) => r.score ?? 0)) : 1
+  const stats = isOwner
+    ? [
+        { k: 'Polls resolved', v: totalResolved },
+        { k: 'Accuracy', v: totalResolved > 0 ? `${Math.round(accuracy * 100)}%` : '—' },
+        { k: 'Topics', v: reputation.length },
+      ]
+    : [{ k: 'Topics', v: reputation.length }]
 
   return (
     <div className="bg-parchment-bg min-h-screen">
@@ -134,11 +141,7 @@ export const ReputationPage = ({
 
           {/* Right: stats */}
           <div className="cs-stat-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(3, 1fr)', gap: 0, alignSelf: 'center' }}>
-            {[
-              { k: 'Polls resolved', v: totalResolved },
-              { k: 'Accuracy',       v: totalResolved > 0 ? `${Math.round(accuracy * 100)}%` : '—' },
-              { k: 'Topics',         v: reputation.length },
-            ].map((s, i) => (
+            {stats.map((s, i) => (
               <div key={s.k} style={{
                 padding: '0 24px',
                 borderLeft: i > 0 ? '1px solid var(--color-parchment-line-soft)' : 'none',
@@ -164,6 +167,9 @@ export const ReputationPage = ({
           fontStyle: 'italic', maxWidth: 700,
         }}>
           Reputation here is a record of contribution to public intelligence — not a wallet, token, or financial asset. It cannot be traded or transferred.
+          {isOwner
+            ? ' Exact scores and per-poll results are visible only to you.'
+            : ' Others see topic tiers only: exact scores and per-poll results stay private, so no one can work out how this person voted.'}
         </p>
 
         {/* Topic reputation */}
@@ -193,8 +199,9 @@ export const ReputationPage = ({
           ) : (
             <div className="cs-responsive-grid" style={{ display: 'grid', gridTemplateColumns: 'repeat(2, 1fr)', gap: 14 }}>
               {reputation.map((t) => {
-                const rank = getRank(t.score)
-                const topicAccuracy = t.resolved_count > 0 ? t.correct_count / t.resolved_count : 0
+                const rank = tierLabel(t.tier)
+                const resolved = t.resolved_count ?? 0
+                const topicAccuracy = resolved > 0 ? (t.correct_count ?? 0) / resolved : 0
                 return (
                   <div key={t.topic_id} style={{
                     background: 'var(--color-parchment-surface)',
@@ -212,14 +219,15 @@ export const ReputationPage = ({
                         {t.topics?.label ?? t.topic_id}
                       </h3>
                       <Badge
-                        tone={rank === 'Steward' ? 'green' : rank === 'Contributor' ? 'accent' : 'neutral'}
+                        tone={t.tier === 'steward' || t.tier === 'trusted' ? 'green' : t.tier === 'contributor' ? 'accent' : 'neutral'}
                         mono
                       >
                         {rank}
                       </Badge>
                     </div>
 
-                    {/* Row 2: score + POINTS label */}
+                    {t.score !== undefined && (<>
+                    {/* Row 2: score + POINTS label (owner only) */}
                     <div style={{ display: 'flex', alignItems: 'baseline', gap: 8 }}>
                       <span className="font-mono" style={{
                         fontSize: 30,
@@ -245,7 +253,7 @@ export const ReputationPage = ({
                       overflow: 'hidden',
                     }}>
                       <div style={{
-                        width: `${(t.score / maxScore) * 100}%`,
+                        width: `${((t.score ?? 0) / maxScore) * 100}%`,
                         height: '100%',
                         background: 'var(--color-parchment-ink)',
                       }} />
@@ -264,10 +272,11 @@ export const ReputationPage = ({
                       </span>
                       <span>
                         <span style={{ color: 'var(--color-parchment-ink)', fontVariantNumeric: 'tabular-nums' }}>
-                          {t.resolved_count > 0 ? `${Math.round(topicAccuracy * 100)}%` : '—'}
+                          {resolved > 0 ? `${Math.round(topicAccuracy * 100)}%` : '—'}
                         </span>{' '}accuracy
                       </span>
                     </div>
+                    </>)}
                   </div>
                 )
               })}
@@ -275,6 +284,8 @@ export const ReputationPage = ({
           )}
         </section>
 
+        {/* Per-poll sections: the owner only (P8, P9) */}
+        {isOwner && (<>
         {/* Pending sealed votes */}
         <section style={{ marginTop: 40 }}>
           <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline' }}>
@@ -391,6 +402,8 @@ export const ReputationPage = ({
         </section>
 
         {/* Privacy note */}
+        </>)}
+
         <section style={{
           marginTop: 40, padding: '24px 28px',
           border: '1px dashed var(--color-parchment-line)',
@@ -401,13 +414,13 @@ export const ReputationPage = ({
           <div>
             <Eyebrow>Privacy</Eyebrow>
             <p style={{ margin: '10px 0 0', fontSize: 13.5, color: 'var(--color-parchment-ink-soft)', lineHeight: 1.55 }}>
-              We do not show real names, locations, IP addresses, or device fingerprints. Verifying you are exactly one human and showing your contribution history are the only two things this profile does.
+              We do not show real names, locations, IP addresses, or device fingerprints. Verifying you are exactly one human and showing your topic tiers are the only two things this profile does publicly; exact scores and per-poll results are visible to you alone.
             </p>
           </div>
           <div>
             <Eyebrow>Public framing</Eyebrow>
             <p style={{ margin: '10px 0 0', fontSize: 13.5, color: 'var(--color-parchment-ink-soft)', lineHeight: 1.55 }}>
-              Reputation reads as <em>contribution to public intelligence</em>, not <em>profit and loss</em>. Leaderboards compare topic accuracy; they do not create financial value, transferable status, or a portfolio.
+              Reputation reads as <em>contribution to public intelligence</em>, not <em>profit and loss</em>. Leaderboards group people by topic tier; they do not create financial value, transferable status, or a portfolio.
             </p>
           </div>
         </section>

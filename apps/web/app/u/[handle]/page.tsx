@@ -8,11 +8,13 @@ export default async function Page({ params }: { params: Promise<{ handle: strin
   const profile = await getUserProfile(handle)
   if (!profile) return notFound()
   const viewer = await getViewer()
+  // P9, P10: exact scores and per-poll results for the owner only; tiers for everyone else.
+  const isOwner = viewer?.id === profile.id
   const [reputation, contributions, pendingVotes] = await Promise.all([
-    getUserReputation(profile.id),
-    getRecentContributions(profile.id),
+    getUserReputation(profile.id, viewer),
+    getRecentContributions(profile.id, viewer),
     // P8: only the profile's owner sees their votes.
     getPendingVotes(profile.id, viewer),
   ])
-  return <ReputationPage profile={profile} reputation={reputation} contributions={contributions} pendingVotes={pendingVotes} />
+  return <ReputationPage profile={profile} reputation={reputation} contributions={contributions} pendingVotes={pendingVotes} isOwner={isOwner} />
 }

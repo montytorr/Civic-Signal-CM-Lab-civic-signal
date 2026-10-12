@@ -1,9 +1,12 @@
 // Server-side reads for pages and routes. Each query applies the read rule of docs/authz-policies.md
-// that the old row-level policies enforced: public tables are read in full (P1, P2, P9–P12, P15,
-// P16, P18, P20, P21), polls only in public statuses (P5), votes only the viewer's own (P8).
-import { query, queryOne, type PollRow, type ProfileRow, type SourceTemplateRow, type TopicRow, type VoteRow } from '@civicsignal/db'
-import { PUBLIC_POLL_STATUSES, RESULTS_VISIBLE_STATUS, canReadVote, type Viewer } from '@/lib/authz'
+// that the old row-level policies enforced: public tables are read in full (P1, P2, P11, P12, P15,
+// P16, P18, P20, P21), polls only in public statuses (P5), votes and reputation events only the
+// viewer's own (P8, P9), topic reputation as tiers except to its owner (P10), poll results only
+// once resolved (P24).
+import { query, queryOne, type PollRow, type Queryable, type ProfileRow, type SourceTemplateRow, type TopicRow, type VoteRow } from '@civicsignal/db'
+import { PUBLIC_POLL_STATUSES, RESULTS_VISIBLE_STATUS, canReadExactReputation, canReadReputationEvents, canReadVote, type Viewer } from '@/lib/authz'
 import { isUuid } from '@/lib/http'
+import { tierRankSql, tierSql, type ReputationTier } from '@/lib/reputation'
 
 // P5 as a SQL predicate on a polls alias.
 const publicPoll = (alias: string) => `${alias}.status in (${PUBLIC_POLL_STATUSES.map((s) => `'${s}'`).join(', ')})`
@@ -93,18 +96,22 @@ export const getVoteDistribution = async (pollId: string) => {
 }
 
 /** P11: the public key voters encrypt to (from the poll's keypair commitment). */
-export const getPollPublicKey = async (pollId: string) => {
-  if (!isUuid(pollId)) return null
+/**
+ * The poll's published public key, or null. The one reader for it: vote sealing (lib/polls.ts) and
+ * the poll page use this, and a unique index allows one publicKey commitment per poll.
+ */
+export const readPollPublicKey = async (pollId: string, db?: Queryable): Promise<string | null> => {
   const row = await queryOne<{ public_key: string | null }>(
     `select metadata ->> 'publicKey' as public_key
      from audit_commitments
-     where poll_id = $1 and batch_type = 'vote' and metadata ? 'publicKey'
-     order by created_at desc
-     limit 1`,
+     where poll_id = $1 and metadata ? 'publicKey'`,
     [pollId],
+    db,
   )
   return row?.public_key ?? null
 }
+
+export const getPollPublicKey = async (pollId: string) => (isUuid(pollId) ? readPollPublicKey(pollId) : null)
 
 export type ResolvedPollRow = Pick<PollRow, 'id' | 'question' | 'topic_id' | 'region' | 'resolved_at' | 'resolves_at' | 'outcome'> & {
   options: string[]
@@ -141,19 +148,49 @@ export const getTopics = () => query<TopicRow>('select * from topics order by la
 /** P2. */
 export const getUserProfile = (handle: string) => queryOne<ProfileRow>('select * from profiles where handle = $1', [handle])
 
-/** P10. */
-export const getUserReputation = (userId: string) =>
-  query<{ user_id: string; topic_id: string; score: number; resolved_count: number; correct_count: number; topics: TopicRef }>(
-    `select r.*, ${topicJson('t')} as topics
+// P9, P10: exact topic scores and per-poll reputation events reveal individual answers (a score
+// moves by one per correct answer). Anyone but the owner sees a topic's tier only, computed in SQL
+// (tierSql), so the exact numbers never leave the database for a public reader.
+
+export type TopicReputation = {
+  topic_id: string
+  topics: TopicRef
+  tier: ReputationTier
+  /** Owner only. */
+  score?: number
+  resolved_count?: number
+  correct_count?: number
+}
+
+/** P10 (owner): the viewer's own topic reputation, exact. */
+export const getOwnReputation = (viewer: Viewer) =>
+  query<Required<TopicReputation>>(
+    `select r.topic_id, r.score, r.resolved_count, r.correct_count, ${tierSql('r.score')} as tier, ${topicJson('t')} as topics
      from user_topic_reputation r left join topics t on t.id = r.topic_id
      where r.user_id = $1
      order by r.score desc`,
+    [viewer.id],
+  )
+
+/** P10 (public): a user's topic reputation as tiers only. */
+export const getPublicReputation = (userId: string) =>
+  query<TopicReputation>(
+    `select r.topic_id, ${tierSql('r.score')} as tier, ${topicJson('t')} as topics
+     from user_topic_reputation r left join topics t on t.id = r.topic_id
+     where r.user_id = $1
+     order by ${tierRankSql('r.score')} desc, t.label`,
     [userId],
   )
 
-/** P9, with the poll question only for public polls (P5). */
-export const getRecentContributions = (userId: string) =>
-  query<{ id: string; delta: number; created_at: string; polls: { question: string } | null; topics: { label: string } | null }>(
+/** P10: exact for the owner, tiers for everyone else. */
+export const getUserReputation = (userId: string, viewer: Viewer | null): Promise<TopicReputation[]> =>
+  viewer && canReadExactReputation(viewer, userId) ? getOwnReputation(viewer) : getPublicReputation(userId)
+
+export type ContributionRow = { id: string; delta: number; created_at: string; polls: { question: string } | null; topics: { label: string } | null }
+
+/** P9 (owner): the viewer's own reputation events, with the poll question only for public polls (P5). */
+export const getOwnContributions = (viewer: Viewer) =>
+  query<ContributionRow>(
     `select e.id, e.delta, e.created_at,
             case when ${publicPoll('p')} then json_build_object('question', p.question) else null end as polls,
             case when t.id is null then null else json_build_object('label', t.label) end as topics
@@ -163,8 +200,12 @@ export const getRecentContributions = (userId: string) =>
      where e.user_id = $1
      order by e.created_at desc
      limit 10`,
-    [userId],
+    [viewer.id],
   )
+
+/** P9: a user's reputation events, shown only to that user. Anyone else gets an empty list. */
+export const getRecentContributions = async (userId: string, viewer: Viewer | null): Promise<ContributionRow[]> =>
+  viewer && canReadReputationEvents(viewer, userId) ? getOwnContributions(viewer) : []
 
 export type PendingVoteRow = Pick<VoteRow, 'id' | 'poll_id' | 'receipt_hash' | 'created_at'> & {
   matched: boolean | null
@@ -192,34 +233,32 @@ export const getPendingVotes = async (userId: string, viewer: Viewer | null): Pr
 
 export type LeaderboardRow = {
   user_id: string
-  score: number
-  resolved_count: number
-  correct_count: number
+  tier: ReputationTier
   profiles: { handle: string; verified: boolean } | null
   topics: { slug: string; label: string } | null
 }
 
-/** P10 with P2 handles. */
+/** P10 with P2 handles: tiers only, highest tier first, then by handle (not by exact score). */
 export const getTopicLeaderboard = (topicSlug: string, limit = 20) =>
   query<LeaderboardRow>(
-    `select r.user_id, r.score, r.resolved_count, r.correct_count,
+    `select r.user_id, ${tierSql('r.score')} as tier,
             json_build_object('handle', pr.handle, 'verified', coalesce(pr.verified, false)) as profiles,
             ${topicJson('t')} as topics
      from user_topic_reputation r
      join topics t on t.id = r.topic_id
      left join profiles pr on pr.id = r.user_id
      where t.slug = $1
-     order by r.score desc
+     order by ${tierRankSql('r.score')} desc, pr.handle
      limit $2`,
     [topicSlug, limit],
   )
 
 export type PanelCandidateRow = LeaderboardRow & { topic_id: string; panelStatus: string | null }
 
-/** Admin page: users with topic reputation, and their panel status for that topic. */
+/** Admin page: users above the lowest tier in a topic, as tiers, and their panel status there. */
 export const getPanelInviteCandidates = () =>
   query<PanelCandidateRow>(
-    `select r.user_id, r.topic_id, r.score, r.resolved_count, r.correct_count,
+    `select r.user_id, r.topic_id, ${tierSql('r.score')} as tier,
             json_build_object('handle', pr.handle, 'verified', coalesce(pr.verified, false)) as profiles,
             ${topicJson('t')} as topics,
             pm.status as "panelStatus"
@@ -227,8 +266,8 @@ export const getPanelInviteCandidates = () =>
      left join profiles pr on pr.id = r.user_id
      left join topics t on t.id = r.topic_id
      left join panel_members pm on pm.user_id = r.user_id and pm.topic_id = r.topic_id
-     where r.score > 0
-     order by r.score desc
+     where ${tierRankSql('r.score')} > 0
+     order by ${tierRankSql('r.score')} desc, t.label, pr.handle
      limit 100`,
   )
 

@@ -9,14 +9,12 @@ export interface Viewer {
   verified: boolean
 }
 
-// ─── Reads anyone may do (P1, P2, P9–P12, P15, P16, P18, P20, P21) ───────────────────────────────
+// ─── Reads anyone may do (P1, P2, P11, P12, P15, P16, P18, P20, P21) ───────────────────────────────
 
 /** Tables every request may read in full. Queries over them need no viewer. */
 export const PUBLIC_TABLES = [
   'topics', // P1
   'profiles', // P2 (id, handle, verified, verified_at, created_at: there is nothing private on it)
-  'reputation_events', // P9
-  'user_topic_reputation', // P10
   'audit_commitments', // P11 (public material only, S1)
   'disputes', // P12
   'panel_members', // P15
@@ -27,6 +25,17 @@ export const PUBLIC_TABLES = [
 ] as const
 
 export const isPublicTable = (table: string): boolean => (PUBLIC_TABLES as readonly string[]).includes(table)
+
+// ─── Reputation (P9, P10) ────────────────────────────────────────────────────────────────────────
+
+/** P9: per-poll reputation events (correct or not) are readable only by their owner. */
+export const canReadReputationEvents = (viewer: Viewer | null, ownerId: string): boolean => !!viewer && viewer.id === ownerId
+
+/**
+ * P10: anyone reads a user's topic reputation as a tier (lib/reputation.ts); only the owner reads
+ * the exact score and counts.
+ */
+export const canReadExactReputation = (viewer: Viewer | null, ownerId: string): boolean => !!viewer && viewer.id === ownerId
 
 // ─── Polls (P5, P6, D3) ──────────────────────────────────────────────────────────────────────────
 

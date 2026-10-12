@@ -2,6 +2,7 @@
 
 import { useState } from 'react'
 import { Eyebrow, Badge, Btn } from '@civicsignal/ui'
+import { REPUTATION_TIERS, tierLabel } from '@/lib/reputation'
 
 type Topic = {
   id: string
@@ -53,12 +54,11 @@ type PollProposal = {
   topics?: { label: string } | null
 }
 
+// Tiers only, even here: exact scores are the owner's alone (P10).
 type PanelCandidate = {
   user_id: string
   topic_id: string
-  score: number
-  resolved_count: number
-  correct_count: number
+  tier: string
   panelStatus: string | null
   profiles: { handle: string; verified: boolean } | null
   topics: { slug: string; label: string } | null
@@ -196,7 +196,7 @@ export const AdminPage = ({
   const [disputeLoading, setDisputeLoading] = useState<string | null>(null)
   const [reviewNotes, setReviewNotes] = useState<Record<string, string>>({})
   const [candidateKey, setCandidateKey] = useState(panelCandidates.find((c) => !c.panelStatus)?.user_id + ':' + panelCandidates.find((c) => !c.panelStatus)?.topic_id || '')
-  const [inviteMinRep, setInviteMinRep] = useState('1')
+  const [inviteMinTier, setInviteMinTier] = useState('participant')
   const [invitingPanelist, setInvitingPanelist] = useState(false)
   const [proposalList, setProposalList] = useState<PollProposal[]>(pendingProposals)
   const [proposalNotes, setProposalNotes] = useState<Record<string, string>>({})
@@ -425,7 +425,7 @@ export const AdminPage = ({
       const res = await fetch('/api/admin/panels/invite', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, topicId, minReputation: Number(inviteMinRep) || 1, activate: true }),
+        body: JSON.stringify({ userId, topicId, minTier: inviteMinTier, activate: true }),
       })
       const data = await res.json()
       if (!res.ok || !data.success) {
@@ -849,13 +849,17 @@ export const AdminPage = ({
                       value={candidateKey}
                       options={panelCandidates.map((c) => ({
                         value: `${c.user_id}:${c.topic_id}`,
-                        label: `${c.profiles?.handle ?? c.user_id.slice(0, 8)} · ${c.topics?.label ?? 'Topic'} · ${c.score} rep${c.panelStatus ? ` · ${c.panelStatus}` : ''}`,
+                        label: `${c.profiles?.handle ?? c.user_id.slice(0, 8)} · ${c.topics?.label ?? 'Topic'} · ${tierLabel(c.tier)}${c.panelStatus ? ` · ${c.panelStatus}` : ''}`,
                       }))}
                       onChange={setCandidateKey}
                     />
                   </Field>
-                  <Field label="Minimum reputation threshold">
-                    <input value={inviteMinRep} onChange={(e) => setInviteMinRep(e.target.value)} className="font-mono" style={inputStyle} />
+                  <Field label="Minimum topic tier">
+                    <SelectField
+                      value={inviteMinTier}
+                      options={REPUTATION_TIERS.filter((t) => t.min > 0).map((t) => ({ value: t.key, label: `${t.label} (${t.min}+ correct)` }))}
+                      onChange={setInviteMinTier}
+                    />
                   </Field>
                   <div style={{ marginTop: 12 }}>
                     <Btn kind="primary" size="md" onClick={handlePanelInvite} disabled={invitingPanelist || !candidateKey}>

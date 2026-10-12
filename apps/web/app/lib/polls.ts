@@ -1,6 +1,7 @@
 // Admin poll creation, shared by POST /api/admin/polls and proposal approval. Server-only.
 import { generatePollKeypair } from '@civicsignal/crypto'
 import { insertRow, type PollRow, type PoolClient } from '@civicsignal/db'
+import { readPollPublicKey } from '@/lib/queries'
 
 export interface DraftPollFields {
   topic_id: string
@@ -60,13 +61,7 @@ export const ensurePollPublicKey = async (client: PoolClient, pollId: string): P
     )
     return keypair.publicKey
   }
-  const existing = await client.query<{ public_key: string }>(
-    `select metadata ->> 'publicKey' as public_key from audit_commitments
-     where poll_id = $1 and batch_type = 'vote' and metadata ? 'publicKey'
-     order by created_at limit 1`,
-    [pollId],
-  )
-  const publicKey = existing.rows[0]?.public_key
+  const publicKey = await readPollPublicKey(pollId, client)
   if (!publicKey) throw new Error(`poll ${pollId} has a secret key but no published public key`)
   return publicKey
 }
