@@ -1,3 +1,8 @@
+// The loading skeleton for the list pages in this route group only. It must not wrap detail pages
+// (polls/[id], u/[handle], ...) or pages that redirect: inside a loading boundary the response is
+// streamed and its status is sent before notFound() or redirect() runs, so a missing poll would get
+// HTTP 200 instead of 404. Pages outside this group render fully first and keep real status codes.
+
 export default function Loading() {
   return (
     <main
