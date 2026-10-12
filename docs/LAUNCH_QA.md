@@ -26,22 +26,27 @@ This checklist is the minimum bar before inviting a wider public beta cohort. Ci
 
 ## Required gates
 
-Run from the repository root with production-like Supabase credentials loaded:
+Run from the repository root. The smoke scripts drive the HTTP API of a running web app (`BASE_URL`, default `http://localhost:3000`) with real sessions, and use its Postgres database (`DATABASE_URL`) only to read a topic, verify their throwaway accounts, promote their admin, set up topic reputation, and clean up:
 
 ```bash
 corepack pnpm -r test
+corepack pnpm --filter @civicsignal/db test:pg
+corepack pnpm --filter @civicsignal/resolver test:pg
+corepack pnpm --filter @civicsignal/web test:pg
 corepack pnpm --filter @civicsignal/web typecheck
 corepack pnpm --filter @civicsignal/web build
-node scripts/smoke-proposal-lifecycle.mjs
-node scripts/smoke-trusted-panels.mjs
+BASE_URL=https://civicsignal.montytorr.com DATABASE_URL=postgresql://... node scripts/smoke-proposal-lifecycle.mjs
+BASE_URL=https://civicsignal.montytorr.com DATABASE_URL=postgresql://... node scripts/smoke-trusted-panels.mjs
 ```
+
+The `test:pg` scripts start a throwaway Postgres container, so they need Docker. `BASE_URL` must have the same origin as the app's `APP_URL`: the app rejects writes whose `Origin` header does not match. Each smoke script signs up and logs in three accounts, which stays under the auth rate limits (per IP: 10 signups and 30 login attempts per 15 minutes).
 
 Expected smoke output:
 
 - `SMOKE_OK proposal-lifecycle ...`
 - `SMOKE_OK trusted-panels ...`
 
-The proposal lifecycle smoke must clean up every synthetic poll, proposal, vote, audit commitment, reputation event, dispute, evidence row, review row, profile, and auth user it creates. Synthetic `Approved proposal lifecycle poll ...` rows in production are a failure.
+Each smoke script must clean up every synthetic poll, poll secret, proposal, vote, audit commitment, reputation event, topic reputation row, panel membership, dispute, evidence row, review row, profile, session, and user account it creates, and prints `SMOKE_FAIL` if it cannot. Synthetic `Proposal lifecycle smoke test ...` or `Trusted Panels smoke test ...` rows, or `@smoke.civicsignal.test` accounts, in production are a failure.
 
 ## Live route checks
 

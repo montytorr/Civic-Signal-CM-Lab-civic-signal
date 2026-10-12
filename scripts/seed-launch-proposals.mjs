@@ -1,20 +1,21 @@
 #!/usr/bin/env node
-const base = process.env.NEXT_PUBLIC_SUPABASE_URL
-const key = process.env.SUPABASE_SERVICE_ROLE_KEY
-if (!base || !key) {
-  console.error('Missing NEXT_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY')
+// Seed the launch moderation queue with example poll proposals. Idempotent: proposals are
+// matched by question and updated in place on later runs.
+// Usage: DATABASE_URL=postgresql://... node scripts/seed-launch-proposals.mjs
+import { createRequire } from 'node:module'
+
+const pg = createRequire(new URL('../packages/db/package.json', import.meta.url))('pg')
+
+const databaseUrl = process.env.DATABASE_URL
+if (!databaseUrl) {
+  console.error('Missing DATABASE_URL')
   process.exit(1)
 }
 
-const headers = { apikey: key, Authorization: `Bearer ${key}`, 'Content-Type': 'application/json' }
-const req = async (path, init = {}) => {
-  const res = await fetch(`${base}${path}`, { ...init, headers: { ...headers, Prefer: init.prefer ?? init.headers?.Prefer ?? '', ...(init.headers ?? {}) } })
-  const text = await res.text()
-  let json = null
-  try { json = text ? JSON.parse(text) : null } catch { json = text }
-  if (!res.ok) throw new Error(`${res.status} ${typeof json === 'object' && json?.message ? json.message : text}`)
-  return json
-}
+// Owns the seed proposals when the database has no admin or verified profile yet. Its
+// password hash never verifies, so nobody can sign in as it.
+const SEED_OWNER_EMAIL = 'launch-seed@civicsignal.test'
+const SEED_OWNER_HANDLE = 'civicsignal-launch-seed'
 
 const proposals = [
   {
@@ -76,41 +77,85 @@ const proposals = [
   },
 ]
 
+// The seed owner if it exists, otherwise an admin, otherwise a verified profile. On a database
+// with none of these, create the seed owner (verified; the users trigger creates its profile).
+const findOrCreateOwner = async (client) => {
+  const { rows } = await client.query(
+    `select p.id, p.handle
+       from profiles p
+       join users u on u.id = p.id
+      where u.email = $1 or u.is_admin or p.verified
+      order by (u.email = $1) desc, u.is_admin desc, p.created_at asc
+      limit 1`,
+    [SEED_OWNER_EMAIL],
+  )
+  if (rows.length) return { ...rows[0], created: false }
+
+  const { rows: [user] } = await client.query(
+    `insert into users (email, password_hash, email_verified_at) values ($1, '!', now()) returning id`,
+    [SEED_OWNER_EMAIL],
+  )
+  await client.query('update profiles set handle = $2 where id = $1', [user.id, SEED_OWNER_HANDLE])
+  return { id: user.id, handle: SEED_OWNER_HANDLE, created: true }
+}
+
+const client = new pg.Client({ connectionString: databaseUrl, application_name: 'civicsignal-seed' })
+
 try {
-  const profiles = await req('/rest/v1/profiles?select=id,handle,verified,is_admin&or=(is_admin.eq.true,verified.eq.true)&limit=1')
-  if (!profiles.length) throw new Error('No verified/admin profile available to own seed proposals')
-  const owner = profiles[0]
-  const topics = await req('/rest/v1/topics?select=id,slug')
+  await client.connect()
+  await client.query('begin')
+
+  const owner = await findOrCreateOwner(client)
+  const { rows: topics } = await client.query('select id, slug from topics')
   const topicId = new Map(topics.map((t) => [t.slug, t.id]))
   let inserted = 0
   let updated = 0
 
   for (const proposal of proposals) {
-    const existing = await req(`/rest/v1/poll_proposals?select=id,status&question=eq.${encodeURIComponent(proposal.question)}&limit=1`)
-    const body = {
-      proposed_by: owner.id,
-      topic_id: topicId.get(proposal.topic),
-      question: proposal.question,
-      region: proposal.region,
-      options: proposal.options,
-      source_of_truth: proposal.source_of_truth,
-      resolution_criteria: proposal.resolution_criteria,
-      cutoff_at: proposal.cutoff_at,
-      resolves_at: proposal.resolves_at,
-      status: proposal.status,
-      moderator_notes: proposal.moderator_notes ?? null,
-    }
-    if (!body.topic_id) throw new Error(`Missing topic ${proposal.topic}`)
+    const values = [
+      owner.id,
+      topicId.get(proposal.topic),
+      proposal.question,
+      proposal.region,
+      JSON.stringify(proposal.options),
+      proposal.source_of_truth,
+      proposal.resolution_criteria,
+      proposal.cutoff_at,
+      proposal.resolves_at,
+      proposal.status,
+      proposal.moderator_notes ?? null,
+    ]
+    if (!values[1]) throw new Error(`Missing topic ${proposal.topic}`)
+
+    const { rows: existing } = await client.query('select id from poll_proposals where question = $1 limit 1', [proposal.question])
     if (existing.length) {
-      await req(`/rest/v1/poll_proposals?id=eq.${existing[0].id}`, { method: 'PATCH', prefer: 'return=minimal', body: JSON.stringify(body) })
+      await client.query(
+        `update poll_proposals
+            set proposed_by = $1, topic_id = $2, question = $3, region = $4, options = $5::jsonb,
+                source_of_truth = $6, resolution_criteria = $7, cutoff_at = $8, resolves_at = $9,
+                status = $10, moderator_notes = $11
+          where id = $12`,
+        [...values, existing[0].id],
+      )
       updated++
     } else {
-      await req('/rest/v1/poll_proposals', { method: 'POST', prefer: 'return=minimal', body: JSON.stringify(body) })
+      await client.query(
+        `insert into poll_proposals
+           (proposed_by, topic_id, question, region, options, source_of_truth, resolution_criteria,
+            cutoff_at, resolves_at, status, moderator_notes)
+         values ($1, $2, $3, $4, $5::jsonb, $6, $7, $8, $9, $10, $11)`,
+        values,
+      )
       inserted++
     }
   }
-  console.log(`SEED_OK launch-proposals owner=${owner.handle} inserted=${inserted} updated=${updated}`)
+
+  await client.query('commit')
+  console.log(`SEED_OK launch-proposals owner=${owner.handle}${owner.created ? ' (created)' : ''} inserted=${inserted} updated=${updated}`)
 } catch (err) {
+  try { await client.query('rollback') } catch {}
   console.error('SEED_FAIL launch-proposals:', err.message)
-  process.exit(1)
+  process.exitCode = 1
+} finally {
+  await client.end().catch(() => {})
 }
