@@ -52,3 +52,6 @@ Thumbs.db
 *.swp
 *.swo
 apps/web/supabase/.temp/
+
+# Turborepo cache
+.turbo/
