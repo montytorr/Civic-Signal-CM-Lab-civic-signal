@@ -58,7 +58,10 @@ create table if not exists public.email_tokens (
   token_hash text not null unique,
   created_at timestamptz not null default now(),
   expires_at timestamptz not null,
-  used_at timestamptz
+  used_at timestamptz,
+  -- Wrong passwords entered with this token (verification needs the account password); the token
+  -- is spent after a few, so a stolen link cannot be used to guess the password.
+  failed_attempts integer not null default 0 check (failed_attempts >= 0)
 );
 
 create index if not exists idx_email_tokens_user_purpose on public.email_tokens(user_id, purpose);
@@ -158,6 +161,10 @@ create table if not exists public.audit_commitments (
   created_at timestamptz default now(),
   constraint audit_commitments_no_secret_key check (metadata is null or not (metadata ? 'secretKey'))
 );
+
+-- One published public key per poll: every reader (vote sealing, the poll page) gets the same one.
+create unique index if not exists audit_commitments_one_public_key
+  on public.audit_commitments(poll_id) where metadata ? 'publicKey';
 
 -- Public material only (public key, hashes, Merkle roots): audit_commitments is publicly
 -- readable. A poll's secret key goes in poll_secrets, never in metadata.

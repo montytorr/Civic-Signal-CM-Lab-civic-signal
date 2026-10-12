@@ -51,15 +51,30 @@ export const rateLimit = (
   return { allowed: true, remaining: maxAttempts - entry.count }
 }
 
-/** True if a key has used up its attempts, without counting one (for failure-only limits). */
-export const isRateLimited = (key: string, maxAttempts: number): boolean => {
+/**
+ * Give back one attempt (the request turned out not to be a failure). With rateLimit, this is how
+ * a failure-only limit stays atomic: take a slot before the slow check (so concurrent requests
+ * cannot all pass a check that only one of them should), and refund it when the check succeeds.
+ */
+export const refundAttempt = (key: string) => {
   const entry = attempts.get(boundedKey(key))
-  return !!entry && Date.now() <= entry.resetAt && entry.count >= maxAttempts
+  if (entry && entry.count > 0) entry.count--
 }
 
-/** Count one attempt against a key (pair with isRateLimited to count failures only). */
-export const recordAttempt = (key: string, windowMs: number) => {
-  rateLimit(key, Number.MAX_SAFE_INTEGER, windowMs)
+/**
+ * Take one slot on each key, all or nothing; throws 429 (taking none) if any key is spent.
+ * Returns a function that refunds them all.
+ */
+export const reserveAttempts = (limits: Array<[key: string, max: number, windowMs: number]>, message = 'Too many attempts. Try again later.') => {
+  const taken: string[] = []
+  for (const [key, max, windowMs] of limits) {
+    if (!rateLimit(key, max, windowMs).allowed) {
+      taken.forEach(refundAttempt)
+      throw tooMany(windowMs, message)
+    }
+    taken.push(key)
+  }
+  return () => taken.forEach(refundAttempt)
 }
 
 /** The window for the auth limits (login, signup, resend, reset): 15 minutes. */
@@ -73,10 +88,6 @@ export const enforceRateLimit = (key: string, maxAttempts: number, windowMs: num
   if (!rateLimit(key, maxAttempts, windowMs).allowed) throw tooMany(windowMs, message)
 }
 
-/** Throw a 429 if a failure-only key is used up (see isRateLimited / recordAttempt). */
-export const enforceNotLimited = (key: string, maxAttempts: number, windowMs: number, message = 'Too many attempts. Try again later.') => {
-  if (isRateLimited(key, maxAttempts)) throw tooMany(windowMs, message)
-}
 
 /** Forget every counter (tests). */
 export const resetRateLimits = () => {

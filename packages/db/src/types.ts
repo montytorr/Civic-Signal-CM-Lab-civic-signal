@@ -38,6 +38,7 @@ export interface EmailTokenRow {
   created_at: string
   expires_at: string
   used_at: string | null
+  failed_attempts: number
 }
 
 export interface TopicRow {

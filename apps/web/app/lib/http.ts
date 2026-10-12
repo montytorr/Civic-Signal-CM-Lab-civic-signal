@@ -45,6 +45,12 @@ export const baseUrlFor = (req: Request): string => appUrl() ?? new URL(req.url)
  * own X-Forwarded-For, writes the TCP peer there, and sets X-Real-Ip to the TCP peer. So X-Real-Ip
  * is the trustworthy value. Without it, use the LAST X-Forwarded-For entry (the one the nearest
  * proxy appended); the first entry is whatever the client sent and would let it dodge per-IP limits.
+ *
+ * Residual, accepted: checked on clawdius, Traefik v3.7.13 with no forwardedHeaders.trustedIPs or
+ * forwardedHeaders.insecure on its entry points. But the container's port 3000 is reachable from
+ * other containers on trading-v2-network without Traefik, and a request sent that way can set any
+ * X-Real-Ip and so pick its own rate-limit bucket. Only code already running on that network can
+ * do this.
  */
 export const clientIp = (req: Request): string => {
   const realIp = req.headers.get('x-real-ip')?.trim()

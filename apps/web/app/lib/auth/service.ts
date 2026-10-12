@@ -93,13 +93,27 @@ export const resendVerification = async ({ email, baseUrl }: { email: string; ba
 
 export type VerifyResult =
   | { ok: true; userId: string; token: string; expiresAt: Date }
-  | { ok: false; reason: 'invalid_token' | 'wrong_password' }
+  | { ok: false; reason: 'invalid_token' | 'wrong_password' | 'token_spent' }
+
+/** Wrong passwords a verification link takes before it stops working. */
+export const VERIFY_TOKEN_MAX_FAILURES = 5
+
+/** The email a usable verify token belongs to (to key the password-failure limits), or null. */
+export const verifyTokenEmail = async (token: string): Promise<string | null> => {
+  const row = await queryOne<{ email: string }>(
+    `select u.email from email_tokens t join users u on u.id = t.user_id
+     where t.token_hash = $1 and t.purpose = 'verify' and t.used_at is null and t.expires_at > now()`,
+    [hashToken(token)],
+  )
+  return row?.email ?? null
+}
 
 /**
  * Confirm an email with a verify token and the account's current password. On success the users
  * trigger marks the profile verified, every session of the account ends (whoever held one before
- * verification is out), and a new session starts for the verifier. A wrong password leaves the
- * token usable, so the owner can retry with the password of their latest signup.
+ * verification is out), and a new session starts for the verifier. A wrong password is counted on
+ * the token, which is spent after VERIFY_TOKEN_MAX_FAILURES (the route also counts it against the
+ * login failure limits); until then the owner can retry with the password of their latest signup.
  */
 export const verifyEmail = ({ token, password }: { token: string; password: string }): Promise<VerifyResult> =>
   withTransaction(async (client) => {
@@ -112,7 +126,17 @@ export const verifyEmail = ({ token, password }: { token: string; password: stri
       client,
     )
     if (!row) return { ok: false, reason: 'invalid_token' }
-    if (!(await verifyPassword(row.password_hash, password))) return { ok: false, reason: 'wrong_password' }
+    if (!(await verifyPassword(row.password_hash, password))) {
+      // The token row is locked, so concurrent wrong guesses are counted one by one.
+      const counted = await queryOne<{ failed_attempts: number }>(
+        `update email_tokens set failed_attempts = failed_attempts + 1,
+                used_at = case when failed_attempts + 1 >= $2 then now() else used_at end
+         where id = $1 returning failed_attempts`,
+        [row.id, VERIFY_TOKEN_MAX_FAILURES],
+        client,
+      )
+      return { ok: false, reason: (counted?.failed_attempts ?? 0) >= VERIFY_TOKEN_MAX_FAILURES ? 'token_spent' : 'wrong_password' }
+    }
 
     const userId = await consumeEmailToken(token, 'verify', client)
     if (!userId) return { ok: false, reason: 'invalid_token' }

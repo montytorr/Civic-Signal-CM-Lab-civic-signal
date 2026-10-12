@@ -3,11 +3,11 @@ import { clearedSessionCookie } from '@/lib/auth/cookie'
 import { validatePassword } from '@/lib/auth/crypto'
 import { resetPassword } from '@/lib/auth/service'
 import { HttpError, clientIp, mutation, readJson } from '@/lib/http'
-import { AUTH_WINDOW_MS, enforceRateLimit } from '@/lib/rate-limit'
+import { limitIp } from '@/lib/auth/limits'
 
 // Sets a new password with a reset token. A5: every session of the user ends, this browser's too.
 export const POST = mutation(async (req) => {
-  enforceRateLimit(`reset:${clientIp(req)}`, 10, AUTH_WINDOW_MS)
+  limitIp('reset', clientIp(req))
   const body = await readJson(req)
   const token = typeof body.token === 'string' ? body.token : ''
   const passwordError = validatePassword(body.password)
