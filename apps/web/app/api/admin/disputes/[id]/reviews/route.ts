@@ -1,94 +1,76 @@
-import { createClient, createServiceClient } from '@/lib/supabase-server'
 import { NextResponse } from 'next/server'
-
-const t = (client: ReturnType<typeof createServiceClient>, table: string): any =>
-  (client as any).from(table)
+import { query, queryOne, withTransaction } from '@civicsignal/db'
+import { getRequestViewer } from '@/lib/auth/session'
+import { assertCanReviewDispute, ownedRow, requireUser } from '@/lib/authz'
+import { HttpError, isUuid, mutation, readJson } from '@/lib/http'
 
 const VALID_DECISIONS = ['uphold', 'dismiss'] as const
 type Decision = typeof VALID_DECISIONS[number]
 
 type Params = { params: Promise<{ id: string }> }
 
-export const POST = async (req: Request, { params }: Params) => {
-  try {
-    const { id: disputeId } = await params
-    const supabase = await createClient()
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return NextResponse.json({ success: false, error: 'Authentication required' }, { status: 401 })
-    }
+// R4: an admin, or an active panelist for the poll's topic, reviews an open dispute.
+// P19, D12: the review is the viewer's own (reviewer_id = U); a second review replaces their first.
+export const POST = mutation(async (req, { params }: Params) => {
+  const viewer = requireUser(await getRequestViewer(req))
+  const { id: disputeId } = await params
+  const body = await readJson(req)
+  const { decision, rationale } = body as { decision?: Decision; rationale?: unknown }
+  if (!decision || !VALID_DECISIONS.includes(decision)) {
+    throw new HttpError(400, 'decision must be uphold or dismiss', 'INVALID_DECISION')
+  }
+  if (typeof rationale !== 'string' || rationale.trim().length < 8 || rationale.length > 2000) {
+    throw new HttpError(400, 'rationale is required (8-2000 chars)', 'INVALID_BODY')
+  }
+  if (!isUuid(disputeId)) throw new HttpError(404, 'Dispute not found', 'DISPUTE_NOT_FOUND')
 
-    const body = await req.json()
-    const { decision, rationale } = body as { decision?: Decision; rationale?: string }
-    if (!decision || !VALID_DECISIONS.includes(decision)) {
-      return NextResponse.json({ success: false, error: 'decision must be uphold or dismiss', code: 'INVALID_DECISION' }, { status: 400 })
-    }
-    if (!rationale || typeof rationale !== 'string' || rationale.trim().length < 8 || rationale.length > 2000) {
-      return NextResponse.json({ success: false, error: 'rationale is required (8-2000 chars)', code: 'INVALID_BODY' }, { status: 400 })
-    }
+  const result = await withTransaction(async (client) => {
+    const dispute = await queryOne<{ id: string; poll_id: string; status: string; topic_id: string | null }>(
+      `select d.id, d.poll_id, d.status, p.topic_id
+       from disputes d left join polls p on p.id = d.poll_id
+       where d.id = $1
+       for update of d`,
+      [disputeId],
+      client,
+    )
+    if (!dispute) throw new HttpError(404, 'Dispute not found', 'DISPUTE_NOT_FOUND')
+    const panelist = dispute.topic_id
+      ? await queryOne(
+          `select 1 from panel_members where topic_id = $1 and user_id = $2 and status = 'active'`,
+          [dispute.topic_id, viewer.id],
+          client,
+        )
+      : null
+    assertCanReviewDispute(viewer, dispute, !!panelist)
 
-    const db = createServiceClient()
-    const { data: dispute } = await t(db, 'disputes')
-      .select('id, poll_id, status, polls(topic_id)')
-      .eq('id', disputeId)
-      .single() as { data: { id: string; poll_id: string; status: string; polls: { topic_id: string } | null } | null }
+    const row = ownedRow(viewer, 'dispute_reviews', { dispute_id: disputeId, decision, rationale: rationale.trim() })
+    const review = await queryOne(
+      `insert into dispute_reviews (dispute_id, reviewer_id, decision, rationale)
+       values ($1, $2, $3, $4)
+       on conflict (dispute_id, reviewer_id) do update set decision = excluded.decision, rationale = excluded.rationale
+       returning id, decision, rationale, reviewer_id, created_at`,
+      [row.dispute_id, row.reviewer_id, row.decision, row.rationale],
+      client,
+    )
 
-    if (!dispute) {
-      return NextResponse.json({ success: false, error: 'Dispute not found', code: 'DISPUTE_NOT_FOUND' }, { status: 404 })
-    }
-    if (!['open', 'reviewing'].includes(dispute.status)) {
-      return NextResponse.json({ success: false, error: 'Dispute is already closed', code: 'DISPUTE_CLOSED' }, { status: 409 })
-    }
+    await client.query(`update disputes set status = 'reviewing' where id = $1 and status = 'open'`, [disputeId])
 
-    const topicId = dispute.polls?.topic_id
-    const [{ data: profile }, { data: panelMember }] = await Promise.all([
-      (db.from('profiles') as any).select('is_admin').eq('id', user.id).single(),
-      topicId
-        ? t(db, 'panel_members').select('id, status').eq('topic_id', topicId).eq('user_id', user.id).eq('status', 'active').maybeSingle()
-        : Promise.resolve({ data: null }),
-    ]) as [{ data: { is_admin?: boolean } | null }, { data: { id: string; status: string } | null }]
-
-    if (!profile?.is_admin && !panelMember) {
-      return NextResponse.json({ success: false, error: 'Panel or admin access required', code: 'NOT_PANELIST' }, { status: 403 })
-    }
-
-    const { data: review, error: reviewError } = await t(db, 'dispute_reviews')
-      .upsert({
-        dispute_id: disputeId,
-        reviewer_id: user.id,
-        decision,
-        rationale: rationale.trim(),
-      }, { onConflict: 'dispute_id,reviewer_id' })
-      .select('id, decision, rationale, reviewer_id, created_at')
-      .single()
-
-    if (reviewError) {
-      return NextResponse.json({ success: false, error: reviewError.message }, { status: 500 })
-    }
-
-    await t(db, 'disputes').update({ status: 'reviewing' }).eq('id', disputeId).eq('status', 'open')
-
-    const { data: reviews } = await t(db, 'dispute_reviews')
-      .select('decision')
-      .eq('dispute_id', disputeId) as { data: Array<{ decision: Decision }> | null }
-
-    const counts = (reviews ?? []).reduce((acc, r) => {
+    const reviews = await query<{ decision: Decision }>('select decision from dispute_reviews where dispute_id = $1', [disputeId], client)
+    const counts = reviews.reduce((acc, r) => {
       acc[r.decision] = (acc[r.decision] ?? 0) + 1
       return acc
     }, {} as Record<Decision, number>)
 
-    const closingDecision = counts.uphold >= 2 ? 'upheld' : counts.dismiss >= 2 ? 'dismissed' : null
-    if (closingDecision) {
-      await t(db, 'disputes')
-        .update({ status: closingDecision, resolved_at: new Date().toISOString(), resolution_notes: `Panel review: ${closingDecision}` })
-        .eq('id', disputeId)
-      if (closingDecision === 'upheld') {
-        await t(db, 'polls').update({ status: 'disputed' }).eq('id', dispute.poll_id)
-      }
+    const closedAs = counts.uphold >= 2 ? 'upheld' : counts.dismiss >= 2 ? 'dismissed' : null
+    if (closedAs) {
+      await client.query(
+        `update disputes set status = $2, resolved_at = now(), resolution_notes = $3 where id = $1`,
+        [disputeId, closedAs, `Panel review: ${closedAs}`],
+      )
+      if (closedAs === 'upheld') await client.query(`update polls set status = 'disputed' where id = $1`, [dispute.poll_id])
     }
+    return { review, counts, closedAs }
+  })
 
-    return NextResponse.json({ success: true, review, counts, closedAs: closingDecision })
-  } catch (err) {
-    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 })
-  }
-}
+  return NextResponse.json({ success: true, ...result })
+})

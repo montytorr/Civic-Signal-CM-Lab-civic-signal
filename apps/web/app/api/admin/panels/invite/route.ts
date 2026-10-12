@@ -1,66 +1,53 @@
-import { createClient, createServiceClient } from '@/lib/supabase-server'
 import { NextResponse } from 'next/server'
+import { queryOne } from '@civicsignal/db'
+import { getRequestViewer } from '@/lib/auth/session'
+import { requireAdmin } from '@/lib/authz'
+import { HttpError, isUuid, mutation, readJson } from '@/lib/http'
+import { PANEL_TIERS, PUBLIC_MIN_SCORE, tierLabel, tierOf, tierRank, type ReputationTier } from '@/lib/reputation'
 
-const t = (client: ReturnType<typeof createServiceClient>, table: string): any =>
-  (client as any).from(table)
+// R7, D10: panel membership is written by admins only. The bar is a minimum tier (P10): a free
+// numeric threshold would let anyone who can call this find a user's exact score by trial. Panel
+// membership is public (P15), so the bar is a public tier (Contributor or higher): a member
+// reveals no more than their public profile does. minReputation is still accepted, rounded to its
+// tier and raised to the public floor.
+export const POST = mutation(async (req) => {
+  const viewer = requireAdmin(await getRequestViewer(req))
+  const body = await readJson(req)
+  const { topicId, userId } = body
+  const activate = body.activate ?? true
 
-export const POST = async (req: Request) => {
-  try {
-    const supabase = await createClient()
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return NextResponse.json({ success: false, error: 'Authentication required' }, { status: 401 })
-    }
-
-    const db = createServiceClient()
-    const { data: admin } = await (db.from('profiles') as any)
-      .select('is_admin')
-      .eq('id', user.id)
-      .single()
-    if (!admin?.is_admin) {
-      return NextResponse.json({ success: false, error: 'Admin access required' }, { status: 403 })
-    }
-
-    const body = await req.json()
-    const { topicId, userId, minReputation = 1, activate = true } = body as {
-      topicId?: string
-      userId?: string
-      minReputation?: number
-      activate?: boolean
-    }
-
-    if (!topicId || !userId) {
-      return NextResponse.json({ success: false, error: 'topicId and userId are required', code: 'INVALID_BODY' }, { status: 400 })
-    }
-
-    const { data: rep } = await t(db, 'user_topic_reputation')
-      .select('score')
-      .eq('topic_id', topicId)
-      .eq('user_id', userId)
-      .maybeSingle() as { data: { score: number } | null }
-
-    if (!rep || rep.score < minReputation) {
-      return NextResponse.json({ success: false, error: `User needs at least ${minReputation} topic reputation`, code: 'INSUFFICIENT_REPUTATION' }, { status: 403 })
-    }
-
-    const now = new Date().toISOString()
-    const payload = {
-      topic_id: topicId,
-      user_id: userId,
-      invited_by: user.id,
-      status: activate ? 'active' : 'invited',
-      min_reputation_at_invite: minReputation,
-      accepted_at: activate ? now : null,
-    }
-
-    const { data: member, error } = await t(db, 'panel_members')
-      .upsert(payload, { onConflict: 'topic_id,user_id' })
-      .select('id, topic_id, user_id, status, min_reputation_at_invite, invited_at, accepted_at')
-      .single()
-
-    if (error) return NextResponse.json({ success: false, error: error.message }, { status: 500 })
-    return NextResponse.json({ success: true, member })
-  } catch {
-    return NextResponse.json({ success: false, error: 'Internal server error' }, { status: 500 })
+  if (!isUuid(topicId) || !isUuid(userId)) {
+    throw new HttpError(400, 'topicId and userId are required', 'INVALID_BODY')
   }
-}
+  let minTier: ReputationTier
+  if (typeof body.minTier === 'string') {
+    const tier = PANEL_TIERS.find((t) => t.key === body.minTier)
+    if (!tier) throw new HttpError(400, `minTier must be one of: ${PANEL_TIERS.map((t) => t.key).join(', ')}`, 'INVALID_BODY')
+    minTier = tier.key
+  } else if (body.minReputation === undefined || (typeof body.minReputation === 'number' && Number.isInteger(body.minReputation))) {
+    minTier = tierOf(Math.max(PUBLIC_MIN_SCORE, (body.minReputation as number | undefined) ?? PUBLIC_MIN_SCORE))
+  } else {
+    throw new HttpError(400, 'minReputation must be an integer', 'INVALID_BODY')
+  }
+  const minScore = PANEL_TIERS.find((t) => t.key === minTier)!.min
+
+  // Server-internal: the exact score is compared here and never returned.
+  const rep = await queryOne<{ score: number }>(
+    'select score from user_topic_reputation where topic_id = $1 and user_id = $2',
+    [topicId, userId],
+  )
+  if (!rep || tierRank(tierOf(rep.score)) < tierRank(minTier)) {
+    throw new HttpError(403, `User needs at least the ${tierLabel(minTier)} tier in this topic`, 'INSUFFICIENT_REPUTATION')
+  }
+
+  const member = await queryOne(
+    `insert into panel_members (topic_id, user_id, invited_by, status, min_reputation_at_invite, accepted_at)
+     values ($1, $2, $3, $4, $5, $6)
+     on conflict (topic_id, user_id) do update set
+       invited_by = excluded.invited_by, status = excluded.status,
+       min_reputation_at_invite = excluded.min_reputation_at_invite, accepted_at = excluded.accepted_at
+     returning id, topic_id, user_id, status, min_reputation_at_invite, invited_at, accepted_at`,
+    [topicId, userId, viewer.id, activate ? 'active' : 'invited', minScore, activate ? new Date().toISOString() : null],
+  )
+  return NextResponse.json({ success: true, member })
+})

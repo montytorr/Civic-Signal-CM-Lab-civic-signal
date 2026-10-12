@@ -22,7 +22,8 @@ Open an issue first for changes that affect moderation policy, verification, rep
 
 - Node.js 22+
 - pnpm 9 (`corepack enable && corepack prepare pnpm@9 --activate`)
-- A Supabase project (free tier works for local dev)
+- PostgreSQL 17 (a local Docker container works; see below)
+- Docker, for the Postgres test suites
 
 ### Fork and clone
 
@@ -34,11 +35,30 @@ pnpm install
 
 ### Environment
 
-Copy the example env file and fill in your Supabase credentials:
+Copy the example env file and fill in your local values:
 
 ```bash
 cp .env.example apps/web/.env.local
 # edit apps/web/.env.local
+```
+
+The web app reads:
+
+- `DATABASE_URL` — your Postgres, e.g. `postgresql://postgres:<password>@localhost:5432/civicsignal`.
+- `SESSION_SECRET` — optional; the app does not read it today. The session cookie carries a random 32-byte token and the database stores only its SHA-256.
+- `RESEND_API_KEY` — optional in development. Leave it empty and the verification and password-reset links are printed in the server log instead of emailed.
+- `EMAIL_FROM` — sender address for those emails.
+- `APP_URL` — `http://localhost:3000` in development. It is used for links in emails, and writes must come from this origin.
+
+The example file is written for production; drop its `NODE_ENV` line for local development.
+
+### Local database
+
+Start a local Postgres and apply the migrations:
+
+```bash
+docker run -d --name civicsignal-pg -e POSTGRES_PASSWORD=<password> -e POSTGRES_DB=civicsignal -p 5432:5432 postgres:17-alpine
+DATABASE_URL=postgresql://postgres:<password>@localhost:5432/civicsignal pnpm --filter @civicsignal/db db:migrate
 ```
 
 ### Run in development
@@ -51,11 +71,20 @@ This starts both the Next.js web app (`apps/web`) and the resolver service via T
 
 ### Database migrations
 
-Migrations live in `packages/db/migrations/`. To apply them against your Supabase project:
+Migrations live in `packages/db/migrations/`. Apply them with:
 
 ```bash
-npx supabase link --project-ref <your-project-ref>
-npx supabase db query --linked -f packages/db/migrations/<file>.sql
+DATABASE_URL=postgresql://... pnpm --filter @civicsignal/db db:migrate
+```
+
+The migrator applies each pending file once, in its own transaction, and records it in `schema_migrations`; running it again does nothing. Without `DATABASE_URL` in the environment it reads `apps/web/.env.local`.
+
+### First admin
+
+Sign up through the app, open the verification link (printed in the server log when `RESEND_API_KEY` is empty), then promote your account:
+
+```bash
+docker exec civicsignal-pg psql -U postgres -d civicsignal -c "update users set is_admin = true where email = 'you@example.com';"
 ```
 
 ## Product contribution standards
@@ -100,10 +129,16 @@ When a feature changes CivicSignal's trust model, update the public surfaces in 
    pnpm --filter @civicsignal/web build
    corepack pnpm -r test
    ```
-4. **Run lifecycle smoke checks** when touching proposal, poll, dispute, panel, or audit flows:
+   When touching database access, also run the Postgres suites. Each starts a throwaway Postgres container (Docker required):
    ```bash
-   node scripts/smoke-proposal-lifecycle.mjs
-   node scripts/smoke-trusted-panels.mjs
+   pnpm --filter @civicsignal/db test:pg
+   pnpm --filter @civicsignal/resolver test:pg
+   pnpm --filter @civicsignal/web test:pg
+   ```
+4. **Run lifecycle smoke checks** when touching proposal, poll, dispute, panel, or audit flows. They drive the API of a running app (`pnpm dev`) and use `DATABASE_URL` to verify, promote and finally delete the throwaway accounts they create:
+   ```bash
+   BASE_URL=http://localhost:3000 DATABASE_URL=postgresql://... node scripts/smoke-proposal-lifecycle.mjs
+   BASE_URL=http://localhost:3000 DATABASE_URL=postgresql://... node scripts/smoke-trusted-panels.mjs
    ```
 5. **Pull request** — open a PR against `main`. Describe what the change does, why it matters, and which public trust surfaces changed.
 
@@ -123,7 +158,7 @@ When a feature changes CivicSignal's trust model, update the public surfaces in 
 |------|---------|
 | `apps/web` | Next.js 16 frontend |
 | `packages/ui` | Shared React component library |
-| `packages/db` | Supabase client, types, migrations |
+| `packages/db` | Postgres schema, migrations, pg client and types |
 | `packages/crypto` | Vote encryption / Merkle utilities |
 | `services/resolver` | Background service that resolves closed polls |
 
@@ -145,7 +180,7 @@ Before requesting review, confirm:
 
 ## Reporting security issues
 
-Please do not open public issues for vulnerabilities involving authentication, vote privacy, service-role keys, identity verification, or audit-log integrity. Use GitHub private vulnerability reporting when available, or email cal@dispofi.fr with the subject prefix `[CivicSignal Security]`, then coordinate disclosure after a fix is available.
+Please do not open public issues for vulnerabilities involving authentication, vote privacy, database credentials, poll secret keys, identity verification, or audit-log integrity. Use GitHub private vulnerability reporting when available, or email cal@dispofi.fr with the subject prefix `[CivicSignal Security]`, then coordinate disclosure after a fix is available.
 
 ## License
 

@@ -2,7 +2,9 @@ import type { Metadata } from 'next'
 import Link from 'next/link'
 import { redirect } from 'next/navigation'
 import { Eyebrow, Btn, Badge } from '@civicsignal/ui'
-import { createClient } from '@/lib/supabase-server'
+import { query, queryOne } from '@civicsignal/db'
+import { getViewer } from '@/lib/auth/server'
+import { ResendVerification } from '@/components/resend-verification'
 
 export const metadata: Metadata = {
   title: 'Activation | CivicSignal',
@@ -22,38 +24,43 @@ type ActivationStep = {
 const statusTone = (done: boolean) => (done ? 'green' : 'amber') as 'green' | 'amber'
 
 export default async function Page() {
-  const supabase = await createClient()
-  const { data: { user } } = await supabase.auth.getUser()
-  if (!user) redirect('/auth/signin')
+  const viewer = await getViewer()
+  if (!viewer) redirect('/auth/signin')
 
-  const { data: profile } = await (supabase.from('profiles') as any)
-    .select('handle, verified, verified_at')
-    .eq('id', user.id)
-    .maybeSingle() as { data: { handle: string; verified: boolean; verified_at: string | null } | null }
-
-  const [voteCountRes, proposalCountRes, activePollCountRes, recentVotesRes, commitmentCountRes] = await Promise.all([
-    (supabase.from('votes') as any).select('*', { count: 'exact', head: true }).eq('user_id', user.id),
-    (supabase.from('poll_proposals') as any).select('*', { count: 'exact', head: true }).eq('proposed_by', user.id),
-    supabase.from('polls').select('*', { count: 'exact', head: true }).eq('status', 'active'),
-    (supabase.from('votes') as any)
-      .select('id, poll_id, receipt_hash, created_at, polls(question, status, topics(label))')
-      .eq('user_id', user.id)
-      .order('created_at', { ascending: false })
-      .limit(3),
-    (supabase.from('audit_commitments') as any).select('*', { count: 'exact', head: true }),
+  const [counts, recentVotes] = await Promise.all([
+    queryOne<{ votes: string; proposals: string; active_polls: string; commitments: string }>(
+      `select (select count(*) from votes where user_id = $1) as votes,
+              (select count(*) from poll_proposals where proposed_by = $1) as proposals,
+              (select count(*) from polls where status = 'active') as active_polls,
+              (select count(*) from audit_commitments) as commitments`,
+      [viewer.id],
+    ),
+    // P8: the viewer's own votes only; P5: the poll question only for public polls.
+    query<{
+      id: string
+      poll_id: string
+      receipt_hash: string
+      created_at: string
+      polls: { question: string; status: string; topics: { label: string } | null } | null
+    }>(
+      `select v.id, v.poll_id, v.receipt_hash, v.created_at,
+              case when p.status in ('active', 'closed', 'resolved') then json_build_object(
+                'question', p.question, 'status', p.status,
+                'topics', case when t.id is null then null else json_build_object('label', t.label) end
+              ) else null end as polls
+       from votes v join polls p on p.id = v.poll_id left join topics t on t.id = p.topic_id
+       where v.user_id = $1
+       order by v.created_at desc
+       limit 3`,
+      [viewer.id],
+    ),
   ])
 
-  const voteCount = voteCountRes.count ?? 0
-  const proposalCount = proposalCountRes.count ?? 0
-  const activePollCount = activePollCountRes.count ?? 0
-  const commitmentCount = commitmentCountRes.count ?? 0
-  const recentVotes = (recentVotesRes.data ?? []) as Array<{
-    id: string
-    poll_id: string
-    receipt_hash: string
-    created_at: string
-    polls: { question: string; status: string; topics: { label: string } | null } | null
-  }>
+  const profile = { handle: viewer.handle, verified: viewer.verified }
+  const voteCount = Number(counts?.votes ?? 0)
+  const proposalCount = Number(counts?.proposals ?? 0)
+  const activePollCount = Number(counts?.active_polls ?? 0)
+  const commitmentCount = Number(counts?.commitments ?? 0)
 
   const verified = Boolean(profile?.verified)
   const hasVoted = voteCount > 0
@@ -67,7 +74,7 @@ export default async function Page() {
       title: verified ? 'Profile verified' : 'Finish verification',
       body: verified
         ? 'Your profile can vote, propose, and build topic reputation.'
-        : 'Confirm your account/profile before casting votes or proposing public questions.',
+        : 'Confirm your email with the link we sent before casting votes or proposing public questions.',
       href: profile?.handle ? `/u/${profile.handle}` : '/u',
       cta: verified ? 'View profile' : 'Open profile',
       done: verified,
@@ -127,6 +134,7 @@ export default async function Page() {
             <p style={{ margin: 0, fontSize: 15.5, lineHeight: 1.58, color: 'var(--color-parchment-ink-soft)' }}>
               This page is not the product tour. It is your activation checklist: finish profile status, cast one vote, propose one poll, and learn where your receipts and public audit evidence live.
             </p>
+            {!verified && <ResendVerification />}
           </div>
         </section>
 

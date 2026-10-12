@@ -1,6 +1,7 @@
 import type { Metadata } from 'next'
 import { Inter, IBM_Plex_Mono } from 'next/font/google'
 import { AppNav } from '@/components/nav/app-nav'
+import { getViewer } from '@/lib/auth/server'
 import { RouteBreadcrumbs } from '@/components/nav/route-breadcrumbs'
 import { Footer } from '@/components/footer'
 import './globals.css'
@@ -20,7 +21,7 @@ const ibmPlexMono = IBM_Plex_Mono({
 })
 
 export const metadata: Metadata = {
-  metadataBase: new URL(process.env.NEXT_PUBLIC_APP_URL || 'https://civicsignal.montytorr.com'),
+  metadataBase: new URL(process.env.NEXT_PUBLIC_SITE_URL || 'https://civicsignal.montytorr.com'),
   title: 'CivicSignal',
   description: 'Open-source verified-human civic polling for auditable public opinion signals.',
   openGraph: {
@@ -38,11 +39,13 @@ export const metadata: Metadata = {
   },
 }
 
-export default function RootLayout({ children }: { children: React.ReactNode }) {
+export default async function RootLayout({ children }: { children: React.ReactNode }) {
+  // The nav shows the session read on the server (it also makes every page render per request).
+  const viewer = await getViewer()
   return (
     <html lang="en" className={`${inter.variable} ${ibmPlexMono.variable}`}>
       <body className="bg-parchment-bg text-parchment-ink">
-        <AppNav />
+        <AppNav viewer={viewer ? { handle: viewer.handle, isAdmin: viewer.isAdmin } : null} />
         <RouteBreadcrumbs />
         <div className="min-h-screen">{children}</div>
         <Footer />

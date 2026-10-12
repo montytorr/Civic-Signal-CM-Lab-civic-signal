@@ -13,6 +13,8 @@ const config: NextConfig = {
   output: 'standalone',
   outputFileTracingRoot: resolve(process.cwd(), '../..'),
   transpilePackages: ['@civicsignal/ui', '@civicsignal/db', '@civicsignal/crypto'],
+  // Native and Node-only server dependencies: required at runtime, not bundled.
+  serverExternalPackages: ['pg', '@node-rs/argon2'],
   async redirects() {
     return [
       {

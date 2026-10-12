@@ -8,9 +8,7 @@ type Props = {
 
 export default async function Page({ params }: Props) {
   const { id } = await params
-  const [rawPoll, count, distribution] = await Promise.all([getPollById(id), getVoteCount(id), getVoteDistribution(id)])
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  const dbPoll = rawPoll as any
+  const [dbPoll, count, distribution] = await Promise.all([getPollById(id), getVoteCount(id), getVoteDistribution(id)])
 
   if (!dbPoll) notFound()
   if (dbPoll.status !== 'resolved') redirect(`/polls/${id}`)

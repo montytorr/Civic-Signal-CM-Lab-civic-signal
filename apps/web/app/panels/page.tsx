@@ -13,7 +13,7 @@ const formatTs = (iso?: string | null) => iso
   : '—'
 
 export default async function Page() {
-  const { members, evidence, reviews } = await getPanelTransparency() as any
+  const { members, evidence, reviews } = await getPanelTransparency()
 
   return (
     <div style={{ background: 'var(--color-parchment-bg)', color: 'var(--color-parchment-ink)', minHeight: '100%' }}>
@@ -53,7 +53,7 @@ export default async function Page() {
             <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-parchment-line-soft)' }}><Eyebrow>Reputation-gated panelists</Eyebrow></div>
             {members.length === 0 ? (
               <p style={{ margin: 0, padding: 20, fontSize: 13, color: 'var(--color-parchment-muted)' }}>No panelists invited yet.</p>
-            ) : members.map((m: any) => (
+            ) : members.map((m) => (
               <div key={m.id} style={{ padding: '14px 20px', borderBottom: '1px solid var(--color-parchment-line-soft)', display: 'flex', justifyContent: 'space-between', gap: 16 }}>
                 <div>
                   <Link href={`/u/${m.profiles?.handle ?? ''}`} style={{ color: 'var(--color-parchment-ink)', textDecoration: 'none', fontSize: 13.5 }}>{m.profiles?.handle ?? m.user_id}</Link>
@@ -68,7 +68,7 @@ export default async function Page() {
             <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-parchment-line-soft)' }}><Eyebrow>Recent panel reviews</Eyebrow></div>
             {reviews.length === 0 ? (
               <p style={{ margin: 0, padding: 20, fontSize: 13, color: 'var(--color-parchment-muted)' }}>No panel reviews published yet.</p>
-            ) : reviews.map((r: any) => (
+            ) : reviews.map((r) => (
               <div key={r.id} style={{ padding: '14px 20px', borderBottom: '1px solid var(--color-parchment-line-soft)' }}>
                 <div style={{ display: 'flex', justifyContent: 'space-between', gap: 12 }}>
                   <Link href={`/polls/${r.disputes?.poll_id}/resolved`} style={{ color: 'var(--color-parchment-ink)', textDecoration: 'none', fontSize: 13 }}>{r.disputes?.polls?.question ?? 'Dispute review'}</Link>
@@ -85,7 +85,7 @@ export default async function Page() {
           <div style={{ padding: '16px 20px', borderBottom: '1px solid var(--color-parchment-line-soft)' }}><Eyebrow>Evidence packets</Eyebrow></div>
           {evidence.length === 0 ? (
             <p style={{ margin: 0, padding: 20, fontSize: 13, color: 'var(--color-parchment-muted)' }}>No dispute evidence has been submitted yet.</p>
-          ) : evidence.map((e: any) => (
+          ) : evidence.map((e) => (
             <div key={e.id} style={{ padding: '14px 20px', borderBottom: '1px solid var(--color-parchment-line-soft)' }}>
               <Link href={`/polls/${e.disputes?.poll_id}/resolved`} style={{ color: 'var(--color-parchment-ink)', textDecoration: 'none', fontSize: 13.5 }}>{e.disputes?.polls?.question ?? 'Evidence packet'}</Link>
               <p style={{ margin: '6px 0 0', fontSize: 12.5, color: 'var(--color-parchment-ink-soft)', lineHeight: 1.45 }}>{e.summary}</p>

@@ -30,7 +30,7 @@ const SECTIONS = [
     id: 'sealed',
     n: '03',
     h: 'Sealed votes',
-    d: 'When you answer, the active public feed keeps aggregate results hidden until cutoff. The beta stores an encrypted answer, a validated answer for resolution/reputation, and a receipt hash so the workflow can be audited while stronger end-to-end sealing matures.',
+    d: 'When you answer, the active public feed keeps aggregate results hidden until cutoff. The server checks your answer is one of the options, seals it to the poll’s public key and stores only the sealed answer and a receipt hash. No readable copy of your answer is kept. At resolution the ballots are opened in memory to count them: only the totals per answer are published, and your profile records only whether your answer matched.',
     bullets: [
       'Active vote split hidden publicly',
       'Encrypted answer plus receipt hash',
@@ -66,12 +66,12 @@ const SECTIONS = [
     id: 'rep',
     n: '06',
     h: 'Reputation',
-    d: "Reputation is topic-specific and earned by being on the correct side of a resolved poll. It can’t be transferred, sold, staked, or boosted by paying. There is no single global score.",
+    d: "Reputation is topic-specific and earned by being on the correct side of a resolved poll. It can’t be transferred, sold, staked, or boosted by paying. There is no single global score. Others see a topic on your profile only once you reach the Contributor tier there (5 correct answers), and then only your tier (Contributor, Trusted or Steward); your exact score and which polls you got right are visible to you alone, so no one can work out how you voted from your reputation.",
     bullets: [
       'Per-topic only',
+      'Public as a tier, exact only to you',
       'Non-transferable',
       'No financial value',
-      'Decays slowly to reward sustained accuracy',
     ],
   },
   {

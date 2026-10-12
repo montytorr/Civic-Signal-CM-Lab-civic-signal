@@ -1,206 +1,69 @@
-import { createClient, createServiceClient } from '@/lib/supabase-server'
 import { NextResponse } from 'next/server'
-import { generatePollKeypair } from '@civicsignal/crypto'
-import type { Database } from '@civicsignal/db'
+import { query, withTransaction } from '@civicsignal/db'
+import { getRequestViewer } from '@/lib/auth/session'
+import { assertNoSecretKey, requireAdmin } from '@/lib/authz'
+import { HttpError, isUuid, mutation, readJson, route } from '@/lib/http'
+import { createDraftPoll } from '@/lib/polls'
+import type { PollWithTopic } from '@/lib/queries'
 
-type Poll = Database['public']['Tables']['polls']['Row']
+const invalid = (error: string, code = 'INVALID_BODY') => new HttpError(400, error, code)
 
-export const GET = async () => {
-  try {
-    const supabase = await createClient()
+// R3, P6: every poll in every status, for admins only.
+export const GET = route(async (req) => {
+  requireAdmin(await getRequestViewer(req))
+  const polls = await query<PollWithTopic>(
+    `select p.*, case when t.id is null then null else json_build_object('slug', t.slug, 'label', t.label) end as topics
+     from polls p left join topics t on t.id = p.topic_id
+     order by p.created_at desc`,
+  )
+  return NextResponse.json({ success: true, data: polls })
+})
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Authentication required' },
-        { status: 401 }
-      )
-    }
+// R3, P6: create a draft poll. S1: the secret key goes to poll_secrets, never into the response.
+export const POST = mutation(async (req) => {
+  const viewer = requireAdmin(await getRequestViewer(req))
+  const body = await readJson(req)
+  const { question, topicId, region, options, sourceOfTruth, resolutionCriteria, cutoffAt, resolvesAt } = body
 
-    const serviceClient = createServiceClient()
-    const { data: profile } = await (serviceClient.from('profiles') as any)
-      .select('is_admin')
-      .eq('id', user.id)
-      .single()
-    if (!profile?.is_admin) {
-      return NextResponse.json({ success: false, error: 'Admin access required' }, { status: 403 })
-    }
-
-    const { data: polls, error } = await (supabase.from('polls') as any)
-      .select('*, topics(slug, label)')
-      .order('created_at', { ascending: false }) as { data: Poll[] | null; error: { message: string } | null }
-
-    if (error) {
-      return NextResponse.json(
-        { success: false, error: error.message },
-        { status: 500 }
-      )
-    }
-
-    return NextResponse.json({ success: true, data: polls ?? [] })
-  } catch (err) {
-    return NextResponse.json(
-      { success: false, error: 'Internal server error' },
-      { status: 500 }
-    )
+  if (!question || !topicId || !region || !options || !sourceOfTruth || !cutoffAt || !resolvesAt) {
+    throw invalid('Missing required fields')
   }
-}
+  if (typeof question !== 'string' || question.trim().length === 0 || question.trim().length > 500) {
+    throw invalid('question must be a non-empty string (max 500 chars)')
+  }
+  if (!isUuid(topicId)) throw invalid('topicId must be a topic id')
+  if (typeof region !== 'string' || region.trim().length === 0 || region.trim().length > 100) {
+    throw invalid('region must be a non-empty string (max 100 chars)')
+  }
+  if (!Array.isArray(options) || options.length < 2) throw invalid('options must be an array with at least 2 entries', 'INVALID_OPTIONS')
+  if (!options.every((o: unknown) => typeof o === 'string' && o.trim().length > 0)) {
+    throw invalid('Each option must be a non-empty string', 'INVALID_OPTIONS')
+  }
+  if (typeof sourceOfTruth !== 'string' || sourceOfTruth.trim().length === 0 || sourceOfTruth.trim().length > 500) {
+    throw invalid('sourceOfTruth must be a non-empty string (max 500 chars)')
+  }
+  if (resolutionCriteria != null && typeof resolutionCriteria !== 'string') throw invalid('resolutionCriteria must be a string')
+  const cutoffDate = new Date(String(cutoffAt))
+  const resolvesDate = new Date(String(resolvesAt))
+  if (isNaN(cutoffDate.getTime()) || isNaN(resolvesDate.getTime())) throw invalid('cutoffAt and resolvesAt must be valid date strings')
+  if (resolvesDate <= cutoffDate) throw invalid('resolvesAt must be after cutoffAt')
 
-export const POST = async (req: Request) => {
-  try {
-    const supabase = await createClient()
+  const topic = await query('select 1 from topics where id = $1', [topicId])
+  if (topic.length === 0) throw invalid('Unknown topic')
 
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Authentication required' },
-        { status: 401 }
-      )
-    }
-
-    const serviceClient = createServiceClient()
-    const { data: profile } = await (serviceClient.from('profiles') as any)
-      .select('is_admin')
-      .eq('id', user.id)
-      .single()
-    if (!profile?.is_admin) {
-      return NextResponse.json({ success: false, error: 'Admin access required' }, { status: 403 })
-    }
-
-    const body = await req.json()
-    const {
+  const created = await withTransaction((client) =>
+    createDraftPoll(client, {
       question,
-      topicId,
+      topic_id: topicId,
       region,
-      options,
-      sourceOfTruth,
-      resolutionCriteria,
-      cutoffAt,
-      resolvesAt,
-    } = body
+      options: options as string[],
+      source_of_truth: sourceOfTruth,
+      resolution_criteria: (resolutionCriteria as string | null | undefined) ?? null,
+      cutoff_at: cutoffDate.toISOString(),
+      resolves_at: resolvesDate.toISOString(),
+      created_by: viewer.id,
+    }),
+  )
 
-    if (!question || !topicId || !region || !options || !sourceOfTruth || !cutoffAt || !resolvesAt) {
-      return NextResponse.json(
-        { success: false, error: 'Missing required fields', code: 'INVALID_BODY' },
-        { status: 400 }
-      )
-    }
-
-    if (typeof question !== 'string' || question.trim().length === 0 || question.trim().length > 500) {
-      return NextResponse.json(
-        { success: false, error: 'question must be a non-empty string (max 500 chars)', code: 'INVALID_BODY' },
-        { status: 400 }
-      )
-    }
-
-    if (typeof topicId !== 'string' || topicId.trim().length === 0) {
-      return NextResponse.json(
-        { success: false, error: 'topicId must be a non-empty string', code: 'INVALID_BODY' },
-        { status: 400 }
-      )
-    }
-
-    if (typeof region !== 'string' || region.trim().length === 0 || region.trim().length > 100) {
-      return NextResponse.json(
-        { success: false, error: 'region must be a non-empty string (max 100 chars)', code: 'INVALID_BODY' },
-        { status: 400 }
-      )
-    }
-
-    if (!Array.isArray(options) || options.length < 2) {
-      return NextResponse.json(
-        { success: false, error: 'options must be an array with at least 2 entries', code: 'INVALID_OPTIONS' },
-        { status: 400 }
-      )
-    }
-
-    if (!options.every((o: unknown) => typeof o === 'string' && (o as string).trim().length > 0)) {
-      return NextResponse.json(
-        { success: false, error: 'Each option must be a non-empty string', code: 'INVALID_OPTIONS' },
-        { status: 400 }
-      )
-    }
-
-    if (typeof sourceOfTruth !== 'string' || sourceOfTruth.trim().length === 0 || sourceOfTruth.trim().length > 500) {
-      return NextResponse.json(
-        { success: false, error: 'sourceOfTruth must be a non-empty string (max 500 chars)', code: 'INVALID_BODY' },
-        { status: 400 }
-      )
-    }
-
-    const cutoffDate = new Date(cutoffAt)
-    const resolvesDate = new Date(resolvesAt)
-    if (isNaN(cutoffDate.getTime()) || isNaN(resolvesDate.getTime())) {
-      return NextResponse.json(
-        { success: false, error: 'cutoffAt and resolvesAt must be valid date strings', code: 'INVALID_BODY' },
-        { status: 400 }
-      )
-    }
-
-    if (resolvesDate <= cutoffDate) {
-      return NextResponse.json(
-        { success: false, error: 'resolvesAt must be after cutoffAt', code: 'INVALID_BODY' },
-        { status: 400 }
-      )
-    }
-
-    const keypair = generatePollKeypair()
-
-    const { data: poll, error: pollError } = await (serviceClient.from('polls') as any)
-      .insert({
-        question,
-        topic_id: topicId,
-        region,
-        options,
-        source_of_truth: sourceOfTruth,
-        resolution_criteria: resolutionCriteria ?? null,
-        cutoff_at: cutoffAt,
-        resolves_at: resolvesAt,
-        status: 'draft',
-        created_by: user.id,
-      })
-      .select()
-      .single() as { data: Poll | null; error: { message: string } | null }
-
-    if (pollError || !poll) {
-      return NextResponse.json(
-        { success: false, error: pollError?.message ?? 'Failed to create poll' },
-        { status: 500 }
-      )
-    }
-
-    // Store keypair in audit_commitments so the secret key is available at resolution
-    const { error: commitError } = await (serviceClient.from('audit_commitments') as any)
-      .insert({
-        poll_id: poll.id,
-        merkle_root: keypair.publicKey,
-        batch_type: 'vote',
-        metadata: {
-          type: 'keypair',
-          publicKey: keypair.publicKey,
-          secretKey: keypair.secretKey,
-        },
-      }) as { error: { message: string } | null }
-
-    if (commitError) {
-      // Non-fatal — log but still return the created poll
-      console.error('Failed to store poll keypair:', commitError.message)
-    }
-
-    return NextResponse.json(
-      {
-        success: true,
-        data: {
-          poll,
-          publicKey: keypair.publicKey,
-        },
-      },
-      { status: 201 }
-    )
-  } catch (err) {
-    return NextResponse.json(
-      { success: false, error: 'Internal server error' },
-      { status: 500 }
-    )
-  }
-}
+  return NextResponse.json(assertNoSecretKey({ success: true, data: { poll: created.poll, publicKey: created.publicKey } }), { status: 201 })
+})

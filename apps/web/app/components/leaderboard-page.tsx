@@ -4,6 +4,7 @@ import { useState } from 'react'
 import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { Eyebrow } from '@civicsignal/ui'
+import { tierLabel } from '@/lib/reputation'
 
 type Topic = {
   id: string
@@ -11,24 +12,12 @@ type Topic = {
   label: string
 }
 
+// Public: the tier only (P10). Exact scores and accuracy would reveal individual answers.
 type LeaderboardRow = {
   user_id: string
-  score: number
-  resolved_count: number
-  correct_count: number
+  tier: string
   profiles: { handle: string; verified: boolean } | null
   topics: { slug: string; label: string } | null
-}
-
-const getRank = (score: number) => {
-  if (score >= 1500) return 'Steward'
-  if (score >= 500) return 'Contributor'
-  return 'Observer'
-}
-
-const getAccuracy = (correct: number, resolved: number) => {
-  if (resolved === 0) return '—'
-  return `${Math.round((correct / resolved) * 100)}%`
 }
 
 export const LeaderboardPage = ({
@@ -66,7 +55,7 @@ export const LeaderboardPage = ({
         </div>
 
         <p style={{ marginTop: 8, fontSize: 14, color: 'var(--color-parchment-ink-soft)', maxWidth: 600 }}>
-          Topic reputation reflects sustained accuracy — not activity volume.
+          Topic reputation reflects sustained accuracy — not activity volume. People appear from the Contributor tier (5 correct answers) up, grouped by tier, then listed by handle; exact scores stay private so no one can work out how anyone voted.
         </p>
 
         {/* Topic pills */}
@@ -125,12 +114,12 @@ export const LeaderboardPage = ({
             {/* Table header */}
             <div style={{
               display: 'grid',
-              gridTemplateColumns: '48px 1fr 120px 100px 100px',
+              gridTemplateColumns: '1fr 160px',
               gap: 0,
               padding: '12px 22px',
               borderBottom: '1px solid var(--color-parchment-line)',
             }}>
-              {['#', 'Handle', 'Score', 'Accuracy', 'Resolved'].map((col, i) => (
+              {['Handle', 'Tier'].map((col, i) => (
                 <span
                   key={col}
                   className="font-mono"
@@ -139,7 +128,7 @@ export const LeaderboardPage = ({
                     color: 'var(--color-parchment-muted)',
                     letterSpacing: '0.06em',
                     textTransform: 'uppercase',
-                    textAlign: i > 1 ? 'right' : 'left',
+                    textAlign: i > 0 ? 'right' : 'left',
                   }}
                 >
                   {col}
@@ -149,52 +138,36 @@ export const LeaderboardPage = ({
 
             {/* Rows */}
             {leaderboard.map((row, idx) => {
-              const rank = getRank(row.score)
-              const accuracy = getAccuracy(row.correct_count, row.resolved_count)
+              const rank = tierLabel(row.tier)
               const handle = row.profiles?.handle ?? row.user_id
-              const isTop3 = idx < 3
+              const high = row.tier === 'steward' || row.tier === 'trusted'
 
               return (
                 <div
                   key={row.user_id}
                   style={{
                     display: 'grid',
-                    gridTemplateColumns: '48px 1fr 120px 100px 100px',
+                    gridTemplateColumns: '1fr 160px',
                     gap: 0,
                     alignItems: 'center',
                     padding: '16px 22px',
                     borderTop: idx > 0 ? '1px solid var(--color-parchment-line-soft, var(--color-parchment-line))' : 'none',
-                    background: idx === 0 ? 'var(--color-parchment-bg)' : 'transparent',
                   }}
                 >
-                  {/* Rank number */}
-                  <span
+                  <Link
+                    href={`/u/${handle}`}
                     className="font-mono"
                     style={{
-                      fontSize: isTop3 ? 16 : 13,
-                      fontWeight: isTop3 ? 600 : 400,
-                      color: isTop3 ? 'var(--color-parchment-ink)' : 'var(--color-parchment-muted)',
-                      fontVariantNumeric: 'tabular-nums',
+                      fontSize: 14,
+                      fontWeight: 500,
+                      color: 'var(--color-parchment-ink)',
+                      textDecoration: 'none',
+                      letterSpacing: '-0.005em',
                     }}
                   >
-                    {idx + 1}
-                  </span>
-
-                  {/* Handle + rank badge */}
-                  <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-                    <Link
-                      href={`/u/${handle}`}
-                      className="font-mono"
-                      style={{
-                        fontSize: 14,
-                        fontWeight: 500,
-                        color: 'var(--color-parchment-ink)',
-                        textDecoration: 'none',
-                        letterSpacing: '-0.005em',
-                      }}
-                    >
-                      {handle}
-                    </Link>
+                    {handle}
+                  </Link>
+                  <span style={{ textAlign: 'right' }}>
                     <span
                       className="font-mono"
                       style={{
@@ -202,56 +175,12 @@ export const LeaderboardPage = ({
                         letterSpacing: '0.06em',
                         padding: '2px 7px',
                         borderRadius: 999,
-                        color: rank === 'Steward'
-                          ? 'var(--color-parchment-green)'
-                          : rank === 'Contributor'
-                          ? 'var(--color-parchment-ink-soft)'
-                          : 'var(--color-parchment-muted)',
-                        border: `1px solid ${rank === 'Steward' ? 'var(--color-parchment-green)' : 'var(--color-parchment-line)'}`,
+                        color: high ? 'var(--color-parchment-green)' : 'var(--color-parchment-ink-soft)',
+                        border: `1px solid ${high ? 'var(--color-parchment-green)' : 'var(--color-parchment-line)'}`,
                       }}
                     >
                       {rank.toUpperCase()}
                     </span>
-                  </div>
-
-                  {/* Score */}
-                  <span
-                    className="font-mono"
-                    style={{
-                      fontSize: 15,
-                      fontWeight: 500,
-                      color: 'var(--color-parchment-ink)',
-                      fontVariantNumeric: 'tabular-nums',
-                      textAlign: 'right',
-                    }}
-                  >
-                    {row.score.toLocaleString()}
-                  </span>
-
-                  {/* Accuracy */}
-                  <span
-                    className="font-mono"
-                    style={{
-                      fontSize: 13,
-                      color: accuracy === '—' ? 'var(--color-parchment-muted)' : 'var(--color-parchment-ink-soft)',
-                      fontVariantNumeric: 'tabular-nums',
-                      textAlign: 'right',
-                    }}
-                  >
-                    {accuracy}
-                  </span>
-
-                  {/* Resolved count */}
-                  <span
-                    className="font-mono"
-                    style={{
-                      fontSize: 13,
-                      color: 'var(--color-parchment-ink-soft)',
-                      fontVariantNumeric: 'tabular-nums',
-                      textAlign: 'right',
-                    }}
-                  >
-                    {row.resolved_count}
                   </span>
                 </div>
               )
@@ -261,7 +190,7 @@ export const LeaderboardPage = ({
 
         {/* Footer note */}
         <p style={{ marginTop: 28, fontSize: 12.5, color: 'var(--color-parchment-muted)', fontStyle: 'italic', maxWidth: 600 }}>
-          Rankings are topic-specific. A person who has voted correctly on 4 resolved climate polls outranks someone who has voted on 40 politics polls. There is no global rank.
+          Tiers are topic-specific. A person who has answered 5 resolved climate polls correctly is a Contributor in climate, whatever they did in politics. There is no global rank.
         </p>
       </main>
     </div>

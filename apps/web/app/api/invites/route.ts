@@ -1,100 +1,43 @@
-import { createClient, createServiceClient } from '@/lib/supabase-server'
+import { randomInt } from 'crypto'
 import { NextResponse } from 'next/server'
+import { queryOne, withTransaction } from '@civicsignal/db'
+import { getRequestViewer } from '@/lib/auth/session'
+import { requireUser } from '@/lib/authz'
+import { HttpError, mutation, route } from '@/lib/http'
+import { getOwnInvites, type InviteListRow } from '@/lib/queries'
 
 const INVITE_CODE_CHARS = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
 const INVITE_CODE_LENGTH = 8
 const MAX_ACTIVE_INVITES = 5
 
 const generateCode = () =>
-  Array.from({ length: INVITE_CODE_LENGTH }, () =>
-    INVITE_CODE_CHARS[Math.floor(Math.random() * INVITE_CODE_CHARS.length)]
-  ).join('')
+  Array.from({ length: INVITE_CODE_LENGTH }, () => INVITE_CODE_CHARS[randomInt(INVITE_CODE_CHARS.length)]).join('')
 
-export const GET = async () => {
-  try {
-    const supabase = await createClient()
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
+// P14, D9: a user sees only their own invites.
+export const GET = route(async (req) => {
+  const viewer = requireUser(await getRequestViewer(req))
+  return NextResponse.json({ success: true, data: await getOwnInvites(viewer) })
+})
 
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Authentication required' },
-        { status: 401 }
-      )
-    }
-
-    const { data: invites, error } = await (supabase.from('invites') as any)
-      .select('id, code, used_by, used_at, created_at')
-      .eq('created_by', user.id)
-      .order('created_at', { ascending: false })
-
-    if (error) {
-      return NextResponse.json(
-        { success: false, error: error.message },
-        { status: 500 }
-      )
-    }
-
-    return NextResponse.json({ success: true, data: invites ?? [] })
-  } catch {
-    return NextResponse.json(
-      { success: false, error: 'Internal server error' },
-      { status: 500 }
+// D9: invites are written server-side for the signed-in user, at most five unused at a time.
+export const POST = mutation(async (req) => {
+  const viewer = requireUser(await getRequestViewer(req))
+  const invite = await withTransaction(async (client) => {
+    // Serialize a user's invite creation so two requests cannot both pass the limit.
+    await client.query('select pg_advisory_xact_lock(hashtext($1))', [`invites:${viewer.id}`])
+    const active = await queryOne<{ n: string }>(
+      'select count(*) as n from invites where created_by = $1 and used_by is null',
+      [viewer.id],
+      client,
     )
-  }
-}
-
-export const POST = async () => {
-  try {
-    const supabase = await createClient()
-    const { data: { user }, error: authError } = await supabase.auth.getUser()
-
-    if (authError || !user) {
-      return NextResponse.json(
-        { success: false, error: 'Authentication required' },
-        { status: 401 }
-      )
+    if (Number(active?.n ?? 0) >= MAX_ACTIVE_INVITES) {
+      throw new HttpError(400, `Maximum of ${MAX_ACTIVE_INVITES} active invites allowed`, 'MAX_INVITES_REACHED')
     }
-
-    // Count active (unused) invites for this user
-    const { count, error: countError } = await (supabase.from('invites') as any)
-      .select('*', { count: 'exact', head: true })
-      .eq('created_by', user.id)
-      .is('used_by', null)
-
-    if (countError) {
-      return NextResponse.json(
-        { success: false, error: countError.message },
-        { status: 500 }
-      )
-    }
-
-    if ((count ?? 0) >= MAX_ACTIVE_INVITES) {
-      return NextResponse.json(
-        { success: false, error: `Maximum of ${MAX_ACTIVE_INVITES} active invites allowed`, code: 'MAX_INVITES_REACHED' },
-        { status: 400 }
-      )
-    }
-
-    const code = generateCode()
-    const serviceClient = createServiceClient()
-
-    const { data: invite, error: insertError } = await (serviceClient.from('invites') as any)
-      .insert({ code, created_by: user.id })
-      .select('id, code, used_by, used_at, created_at')
-      .single()
-
-    if (insertError) {
-      return NextResponse.json(
-        { success: false, error: insertError.message },
-        { status: 500 }
-      )
-    }
-
-    return NextResponse.json({ success: true, data: invite }, { status: 201 })
-  } catch {
-    return NextResponse.json(
-      { success: false, error: 'Internal server error' },
-      { status: 500 }
+    return queryOne<InviteListRow>(
+      'insert into invites (code, created_by) values ($1, $2) returning id, code, used_by, used_at, created_at',
+      [generateCode(), viewer.id],
+      client,
     )
-  }
-}
+  })
+  return NextResponse.json({ success: true, data: invite }, { status: 201 })
+})

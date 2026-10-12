@@ -1,24 +1,9 @@
 import { redirect } from 'next/navigation'
-import { createClient } from '@/lib/supabase-server'
+import { getViewer } from '@/lib/auth/server'
 
 export default async function Page() {
-  const supabase = await createClient()
-  const {
-    data: { user },
-  } = await supabase.auth.getUser()
-
-  if (!user) {
-    redirect('/auth/signin')
-  }
-
-  const { data: profile } = await (supabase.from('profiles') as any)
-    .select('handle')
-    .eq('id', user.id)
-    .maybeSingle() as { data: { handle: string } | null }
-
-  if (profile?.handle) {
-    redirect(`/u/${profile.handle}`)
-  }
-
+  const viewer = await getViewer()
+  if (!viewer) redirect('/auth/signin')
+  if (viewer.handle) redirect(`/u/${viewer.handle}`)
   redirect('/verify')
 }
